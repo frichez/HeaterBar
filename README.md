@@ -46,5 +46,6 @@ or the heater switched back on, unless it was changed meanwhile. Only heaters
 that are on are touched; each change is a command, so it beeps.
 
 `history.json` in the same folder holds one reading per minute (room, target,
-heating, energy) for the graph. `logs/2026-10-28-office-raw-status.log` in this
+heating, energy) for the graph. `energy.json` keeps each heater's energy per day for good,
+for the total on the back of each card. `logs/2026-10-28-office-raw-status.log` in this
 project is the raw capture from the day the codes were mapped.

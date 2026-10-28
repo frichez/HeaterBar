@@ -5,6 +5,7 @@ import SwiftUI
 /// line and the minutes the heater was heating shaded behind.
 struct TemperatureChart: View {
     let samples: [TemperatureSample]
+    /// The tallest the plot grows; it shrinks to fit a smaller space.
     var chartHeight: CGFloat = 90
 
     @AppStorage("chartHours") private var hours = 6
@@ -27,7 +28,7 @@ struct TemperatureChart: View {
                 Text("Collecting readings, one per minute…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: chartHeight)
+                    .frame(maxWidth: .infinity, minHeight: 50, maxHeight: chartHeight)
             } else {
                 chart
                 HStack(spacing: 12) {
@@ -95,7 +96,8 @@ struct TemperatureChart: View {
             }
         }
         .chartXSelection(value: $selection)
-        .frame(height: chartHeight)
+        // Up to chartHeight, shrinking to fit the space it is given.
+        .frame(minHeight: 50, maxHeight: chartHeight)
     }
 
     /// Drawn in SwiftUI: a native segmented control stops taking clicks on the

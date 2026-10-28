@@ -139,6 +139,7 @@ final class HeaterStore: ObservableObject {
     @Published private(set) var heaters: [HeaterState] = []
     @Published private(set) var isScanning = false
     @Published private(set) var history = HeaterHistory.load()
+    @Published private(set) var ledger = EnergyLedger()
     @Published private(set) var outdoor: OutdoorWeather?
     @Published private(set) var awayActions: [String: AwayAction] = [:]
     @Published private(set) var isAway = false
@@ -179,6 +180,7 @@ final class HeaterStore: ObservableObject {
     private var lastStatusSaved: [String: Date] = [:]
 
     init() {
+        ledger = EnergyLedger.load(seed: history)
         if let data = UserDefaults.standard.data(forKey: Self.savedKey),
            let saved = try? JSONDecoder().decode([HeaterState].self, from: data) {
             heaters = saved
@@ -208,6 +210,17 @@ final class HeaterStore: ObservableObject {
                 try? await Task.sleep(for: .seconds(weather == nil ? 60 : 900))
             }
         }
+        // Steady heating between statuses is billed each minute, for heaters
+        // whose state is live; an unreachable one waits for its next status.
+        Task { @MainActor in
+            while true {
+                try? await Task.sleep(for: .seconds(60))
+                let now = Date()
+                for heater in heaters where lastPower[heater.id] != nil && !heater.isStale && heater.problem == nil {
+                    accrue(heater.id, newWatts: heater.watts, at: now)
+                }
+            }
+        }
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.links.values.forEach { $0.stop() } }
@@ -219,6 +232,7 @@ final class HeaterStore: ObservableObject {
 
     func energyTodayKWh(for id: String) -> Double { history.energyToday(for: id) / 1000 }
     var energyTodayKWh: Double { heaters.reduce(0) { $0 + energyTodayKWh(for: $1.id) } }
+    func energyTotalKWh(for id: String? = nil) -> Double { ledger.energy(for: id) / 1000 }
 
     func scan() {
         guard !isScanning else { return }
@@ -464,21 +478,29 @@ final class HeaterStore: ObservableObject {
         let now = Date()
         saveLastStatus(status, for: id, at: now)
         let watts = Self.watts(for: heaters[index], level: status["D0310D"] as? Int)
+        heaters[index].watts = watts
+        statusLog.record(status, heater: heaters[index].name, room: heaters[index].roomTemperature, watts: watts,
+                         outdoor: outdoor?.temperature, away: isAway, at: now)
+        accrue(id, newWatts: watts, at: now)
+    }
+
+    /// Bills the power drawn since the last call and records the minute in the
+    /// history. Called on each status and once a minute: some models (CX5120)
+    /// report only on changes, so an hour of steady heating sends nothing.
+    private func accrue(_ id: String, newWatts watts: Double, at now: Date) {
+        guard let heater = heaters.first(where: { $0.id == id }) else { return }
         var energyWh = 0.0
         if let last = lastPower[id] {
             // A long gap (sleep, network loss) is not billed at the old power.
             energyWh = last.watts * min(now.timeIntervalSince(last.since), 180) / 3600
         }
         lastPower[id] = (watts, now)
-        heaters[index].watts = watts
-        statusLog.record(status, heater: heaters[index].name, room: heaters[index].roomTemperature, watts: watts,
-                         outdoor: outdoor?.temperature, away: isAway, at: now)
-
-        let heater = heaters[index]
+        ledger.add(energyWh, for: id, at: now)
         if let room = heater.roomTemperature,
            history.record(room: room, target: heater.target, isHeating: heater.isOn == true && heater.isHeating,
                           energyWh: energyWh, outdoor: outdoor?.temperature, for: id, at: now) {
             history.save()
+            ledger.save()
         }
     }
 

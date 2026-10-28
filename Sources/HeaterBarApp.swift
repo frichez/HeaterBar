@@ -75,11 +75,6 @@ struct HeaterPanel: View {
             Divider()
             HStack {
                 Text(summary).font(.caption).foregroundStyle(.secondary)
-                Text("·").font(.caption).foregroundStyle(.tertiary)
-                Text("Today \(Self.cost(store.energyTodayKWh))")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .help(String(format: "%.2f kWh at €%.2f/kWh", store.energyTodayKWh, HeaterStore.pricePerKWh))
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
                     .buttonStyle(.borderless)
@@ -161,14 +156,34 @@ struct HeaterCard: View {
     private var back: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(heater.name).font(.system(.body, weight: .semibold))
+            // The graph takes what the front leaves, so the total and the close
+            // button land on the front's last line.
             TemperatureChart(samples: store.history.samples[heater.id] ?? [], chartHeight: 110)
-            Spacer(minLength: 0)
+            totalRow
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // The same corner as the front's graph button, so one spot flips both ways.
         .overlay(alignment: .bottomTrailing) {
             flipButton("xmark", help: "Back to the controls")
         }
+    }
+
+    /// This heater's energy and cost since the first day recorded, on the
+    /// close button's line.
+    private var totalRow: some View {
+        let kWh = store.energyTotalKWh(for: heater.id)
+        let since = store.ledger.firstDay.map { " on \($0.formatted(date: .abbreviated, time: .omitted))" } ?? ""
+        return HStack(spacing: 6) {
+            Image(systemName: "bolt.fill").foregroundStyle(.secondary)
+            Text(String(format: "Total %.2f kWh · %@", kWh, HeaterPanel.cost(kWh)))
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .frame(height: 24)
+        .padding(.trailing, 30)
+        .help("Energy and cost since HeaterBar started recording\(since), estimated from the heating level at Philips' rated power and €\(String(format: "%.2f", HeaterStore.pricePerKWh))/kWh")
     }
 
     /// Eco when away: what this heater does while nobody is at the Mac.
@@ -299,13 +314,14 @@ struct HeaterCard: View {
                 timerMenu
                     .opacity(isOn ? 1 : 0.6)
                 Spacer()
+                // Right above the graph button.
+                if store.followsPresence(heater) {
+                    ecoMenu
+                }
             }
 
             HStack(alignment: .center, spacing: 6) {
                 energyRow
-                if store.followsPresence(heater) {
-                    ecoMenu
-                }
                 flipButton("chart.xyaxis.line", help: "Show the temperature graph")
             }
         }
@@ -365,15 +381,17 @@ struct HeaterCard: View {
 
     private var energyRow: some View {
         let kWh = store.energyTodayKWh(for: heater.id)
+        let minutes = store.history.heatingMinutesToday(for: heater.id)
+        let heating = minutes >= 60 ? String(format: "%dh%02d", minutes / 60, minutes % 60) : "\(minutes) min"
         return HStack(spacing: 6) {
             Image(systemName: "bolt.fill").foregroundStyle(heater.isOn == true && heater.isHeating ? Color.orange : Color.secondary)
-            Text(String(format: "Today %.2f kWh · %@", kWh, HeaterPanel.cost(kWh)))
+            Text(String(format: "Today %.2f kWh · %@ · %@", kWh, HeaterPanel.cost(kWh), heating))
                 .monospacedDigit()
             Spacer()
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
-        .help("Energy and cost today, estimated from the heating level at Philips' rated power (Low 800 W, Medium 1,200 W, High 2,000 W) and €\(String(format: "%.2f", HeaterStore.pricePerKWh))/kWh")
+        .help("Energy, cost and time spent heating today, estimated from the heating level at Philips' rated power (Low 800 W, Medium 1,200 W, High 2,000 W) and €\(String(format: "%.2f", HeaterStore.pricePerKWh))/kWh")
     }
 
     private var timerMenu: some View {

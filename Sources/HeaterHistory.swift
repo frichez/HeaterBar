@@ -65,6 +65,12 @@ struct HeaterHistory {
         return (samples[id] ?? []).filter { $0.time >= midnight }.reduce(0) { $0 + ($1.energyWh ?? 0) }
     }
 
+    /// Minutes spent heating since local midnight.
+    func heatingMinutesToday(for id: String, now: Date = Date()) -> Int {
+        let midnight = Calendar.current.startOfDay(for: now)
+        return (samples[id] ?? []).filter { $0.time >= midnight && $0.isHeating }.count
+    }
+
     func save() {
         let url = Self.fileURL
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
