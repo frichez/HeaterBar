@@ -299,7 +299,8 @@ struct HeaterCard: View {
             }
 
             HStack(spacing: 4) {
-                ForEach(HeaterMode.allCases, id: \.self) { mode in
+                // The CX5120 has two heat levels, no Medium.
+                ForEach(HeaterMode.allCases.filter { $0 != .medium || !heater.model.hasPrefix("CX5120") }, id: \.self) { mode in
                     modeButton(mode)
                 }
             }

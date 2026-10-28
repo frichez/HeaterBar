@@ -25,13 +25,13 @@ line each time a heater's state changes (room-only changes are not logged).
 | power | D03102 | 1 on, 0 off |
 | selected_mode | D0310C | 0 Auto+, 65 High, 67 Medium, 66 Low, −127 Fan (−16 when off) |
 | running_mode | D0313F | what actually runs: 65/66/67 heating, −16 Auto+ idle, 0 fan |
-| level | D0310D | 1–3 heating power, 4 fan, 0 idle |
+| level | D0310D | 1–3 heating power, 4 fan, 0 idle (always 1 on the CX5120: its running mode tells High from Low) |
 | function | D0310A | 3 heater, 1 fan only |
 | target | D0310E | °C |
 | room | D03224 | °C |
-| oscillation | D0320F | 45 on, 0 off |
+| oscillation | D0320F | 0 off; on is 45 on the CX3120, 17920 on the CX5120 (which is switched on with 17222) |
 | timer_step | D03110 | 0 off, 1 = 30 min, n = n − 1 hours |
-| estimated_watts | | from the level at Philips' rated power: Low 800, Medium 1,200, High 2,000 W (until 2026-10-28 10:4x: measured 900 / 1,100 / 1,900); fan 2 W, +3 W oscillating |
+| estimated_watts | | from the level at Philips' rated power. CX3120: Low 800, Medium 1,200, High 2,000 W, fan 2 W (until 2026-10-28 10:4x: measured 900 / 1,100 / 1,900). CX5120: Low 1,200, High 2,000 W, fan 8 W (until 2026-10-28 19:1x it used the CX3120 figures). +3 W oscillating |
 | outdoor | | °C in Manage, from Open-Meteo (added 2026-10-28 10:1x) |
 | away | | 1 while nobody is at the Mac (see Eco when away) |
 | event | | on lines of their own: each command HeaterBar sent, why, and the heater's answer, e.g. `command D03102=1 (eco: you are back): accepted` |

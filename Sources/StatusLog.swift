@@ -59,8 +59,12 @@ struct StatusLog {
     /// A command HeaterBar sent, on a line of its own with only the event
     /// column filled, e.g. "command D03102=1 (eco: you are back): accepted".
     func recordCommand(_ description: String, reason: String, result: String, heater: String, at now: Date = Date()) {
-        let event = "command \(description) (\(reason)): \(result)"
-            .replacingOccurrences(of: ",", with: ";").replacingOccurrences(of: "\"", with: "")
+        recordEvent("command \(description) (\(reason)): \(result)", heater: heater, at: now)
+    }
+
+    /// Anything else worth a line of its own, e.g. "unreachable".
+    func recordEvent(_ text: String, heater: String, at now: Date = Date()) {
+        let event = text.replacingOccurrences(of: ",", with: ";").replacingOccurrences(of: "\"", with: "")
         let fields = [Self.timeFormat.string(from: now), heater.replacingOccurrences(of: ",", with: " ")]
             + Array(repeating: "", count: Self.columns.count - 3) + [event]
         Self.append(fields.joined(separator: ","), day: now)

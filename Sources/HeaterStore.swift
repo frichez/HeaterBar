@@ -116,20 +116,33 @@ final class HeaterStore: ObservableObject {
     /// Electricity price, euros per kWh.
     static let pricePerKWh = 0.39
 
-    /// Watts drawn at each output level (D0310D): 1–3 are the heating levels at
-    /// Philips' rated power (Low 800, Medium 1,200, High 2,000 W; a plug meter
-    /// read 900, 1,100 and 1,900 on the CX3120), 4 is fan only, as measured.
+    /// Watts drawn at each output level (D0310D): 1–3 heating, 4 fan only.
+    /// CX3120: Philips' rated Low 800, Medium 1,200, High 2,000 W (the Air+ app;
+    /// a plug meter read 900, 1,100 and 1,900), fan 2 W as measured.
+    /// CX5120: two levels, Low 1,200 and High 2,000 W, fan 8 W (Philips' spec
+    /// sheet). Its level stays 1 whatever it does, so the running mode
+    /// (D0313F) tells which one heats.
     /// Idle and standby read 0 W, below the meter's range. The oscillation
-    /// motor adds about 3 W, also measured.
+    /// motor adds about 3 W, measured.
     private static let wattsByLevel: [Int: Double] = [1: 800, 2: 1200, 3: 2000, 4: 2]
     private static let oscillationWatts = 3.0
 
     static func watts(for heater: HeaterState, level: Int?) -> Double {
-        guard heater.isOn == true, let level, let watts = wattsByLevel[level] else { return 0 }
+        guard heater.isOn == true else { return 0 }
+        let oscillation = heater.isOscillating == true ? oscillationWatts : 0
+        if heater.model.hasPrefix("CX5120") {
+            let heating: Double? = switch heater.runningMode {
+            case .high: 2000
+            case .low, .medium: 1200
+            default: nil
+            }
+            return (heater.isHeating ? heating ?? 8 : 8) + oscillation
+        }
+        guard let level, let watts = wattsByLevel[level] else { return 0 }
         // After reaching its target the fan runs down through the heating
         // levels for a while with the element already off.
         let fanOnly = level != 4 && !heater.isHeating
-        return (fanOnly ? wattsByLevel[4]! : watts) + (heater.isOscillating == true ? oscillationWatts : 0)
+        return (fanOnly ? wattsByLevel[4]! : watts) + oscillation
     }
 
     /// D0313F is the mode actually running: 65–67 while heating, −16 once
@@ -156,6 +169,8 @@ final class HeaterStore: ObservableObject {
     /// The power each heater was last drawing, and since when: the energy
     /// between two statuses is that power over the time between them.
     private var lastPower: [String: (watts: Double, since: Date)] = [:]
+    /// The level in each heater's saved status, for billing it after launch.
+    private var cachedLevel: [String: Int] = [:]
     /// Power as the heater last reported it, before any optimistic display.
     private var reportedPower: [String: Bool] = [:]
     /// Counts power commands per heater, so a check knows when it is stale.
@@ -211,12 +226,12 @@ final class HeaterStore: ObservableObject {
             }
         }
         // Steady heating between statuses is billed each minute, for heaters
-        // whose state is live; an unreachable one waits for its next status.
+        // whose state is live; an unreachable one is billed at 0 W.
         Task { @MainActor in
             while true {
                 try? await Task.sleep(for: .seconds(60))
                 let now = Date()
-                for heater in heaters where lastPower[heater.id] != nil && !heater.isStale && heater.problem == nil {
+                for heater in heaters where lastPower[heater.id] != nil && !heater.isStale {
                     accrue(heater.id, newWatts: heater.watts, at: now)
                 }
             }
@@ -357,7 +372,10 @@ final class HeaterStore: ObservableObject {
 
     /// Air+ only switches the sweep on or off; 45° is what it uses for on.
     func setOscillation(_ isOscillating: Bool, for id: String) {
-        send(["D0320F": isOscillating ? 45 : 0], to: id, isOscillating: isOscillating)
+        // The CX5120 ignores 45 and the 17920 it reports while sweeping; the
+        // Home Assistant Philips integration (kongo09) sends it 17222.
+        let sweep = heaters.first { $0.id == id }?.model.hasPrefix("CX5120") == true ? 17222 : 45
+        send(["D0320F": isOscillating ? sweep : 0], to: id, isOscillating: isOscillating)
     }
 
     /// D03110 steps: 1 is 30 minutes, then n is n − 1 hours (13 is 12 hours).
@@ -420,10 +438,47 @@ final class HeaterStore: ObservableObject {
                 self.statusLog.recordCommand(description, reason: reason, result: result, heater: name)
             }
         }
+        link.onReachable = { [weak self] reachable in
+            MainActor.assumeIsolated { self?.reachabilityChanged(reachable, for: id) }
+        }
         links[id] = link
         link.seed(target: heater.target, timerMinutesLeft: heater.timerMinutesLeft)
         link.start()
     }
+
+    /// Unplugged at the wall or off Wi-Fi: billing stops (at most the last
+    /// minute is billed at the old power, the time it takes to notice). Back,
+    /// its state is unknown until it reports, so it is billed nothing until then.
+    private func reachabilityChanged(_ reachable: Bool, for id: String) {
+        guard let index = heaters.firstIndex(where: { $0.id == id }) else { return }
+        let now = Date()
+        if reachable {
+            guard heaters[index].problem == Self.unreachableProblem else {
+                // First answer after launch. A heater that reports only changes
+                // may say nothing for hours, so a recent saved state is taken
+                // as current and billed; a restart rarely misses a change.
+                if heaters[index].isStale, let seen = heaters[index].lastSeen, now.timeIntervalSince(seen) < 600 {
+                    heaters[index].isStale = false
+                    heaters[index].watts = Self.watts(for: heaters[index], level: cachedLevel[id])
+                    lastPower[id] = (heaters[index].watts, now)
+                }
+                return
+            }
+            heaters[index].isStale = true
+            heaters[index].problem = nil
+        } else {
+            accrue(id, newWatts: 0, at: now)
+            heaters[index].watts = 0
+            // Shown off with the switch disabled, and not counted as on.
+            heaters[index].isOn = nil
+            heaters[index].isHeating = false
+            heaters[index].problem = Self.unreachableProblem
+        }
+        statusLog.recordEvent(reachable ? "reachable again" : "unreachable: no answer to ping",
+                              heater: heaters[index].name, at: now)
+    }
+
+    private static let unreachableProblem = "Not connected"
 
     /// Applies a status: live from the heater, or cached (`seenAt`) at launch,
     /// which shows it as stale and records no history or energy.
@@ -474,7 +529,10 @@ final class HeaterStore: ObservableObject {
         if let name = status["D01S03"] as? String, !name.isEmpty { heaters[index].name = name }
         heaters[index].problem = nil
 
-        guard cachedTime == nil else { return }
+        guard cachedTime == nil else {
+            cachedLevel[id] = status["D0310D"] as? Int
+            return
+        }
         let now = Date()
         saveLastStatus(status, for: id, at: now)
         let watts = Self.watts(for: heaters[index], level: status["D0310D"] as? Int)

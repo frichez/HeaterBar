@@ -15,6 +15,9 @@ final class HeaterLink: @unchecked Sendable {
     /// "accepted", "refused: …" or "no reply". Every command beeps, so each
     /// one is accounted for in the log.
     var onCommand: ((_ description: String, _ reason: String, _ result: String) -> Void)?
+    /// The heater answers for the first time, stopped answering pings
+    /// (unplugged at the wall, off Wi-Fi), or answers again.
+    var onReachable: ((Bool) -> Void)?
 
     /// A heater remembers every subscriber (address, port and token) and keeps
     /// pushing to it long after it is gone; enough stale ones and it stops
@@ -47,6 +50,12 @@ final class HeaterLink: @unchecked Sendable {
     private var wiggling: (key: String, temporary: Int, real: Int)?
     /// The panel already shows the last session's state, so launch needs no wiggle.
     private var hasRememberedState = false
+    /// Pings sent since the heater last answered anything. A quiet heater is
+    /// normal (some only report changes), so silence alone proves nothing.
+    private var unansweredPings = 0
+    private var lastPing = Date.distantPast
+    /// Nil until the heater first answers or is given up on after launch.
+    private var isReachable: Bool?
     private var retryAfterSync: [UUID: (values: [String: Any], reason: String, completion: (Bool) -> Void)] = [:]
 
     init(host: String, deviceID: String) {
@@ -133,6 +142,7 @@ final class HeaterLink: @unchecked Sendable {
         }
         connection.start(queue: queue)
         receive(on: connection)
+        if isReachable == nil { checkReachable() }
         if watchdog == nil {
             let timer = DispatchSource.makeTimerSource(queue: queue)
             timer.schedule(deadline: .now() + 5, repeating: 5)
@@ -151,6 +161,7 @@ final class HeaterLink: @unchecked Sendable {
     /// After a dozen unanswered asks the link starts over.
     private func checkFreshness() {
         guard connection != nil else { return }  // reopening
+        checkReachable()
         if counter == nil {
             syncAttempts += 1
             syncAttempts.isMultiple(of: 6) ? connect() : sync()
@@ -167,6 +178,42 @@ final class HeaterLink: @unchecked Sendable {
         observe()
         nextAsk = now.addingTimeInterval(askInterval)
         askInterval = min(askInterval * 2, 60)
+    }
+
+    /// A CoAP ping (an empty confirmable message) every 15 seconds: the heater
+    /// answers it with a reset, silently, without touching its session or
+    /// anyone else's. Four in a row unanswered (under a minute) means it is
+    /// gone; fewer would let a weak Wi-Fi's lost packets raise false alarms.
+    /// At launch, before the first answer, every 5 seconds and two misses, so
+    /// a heater unplugged meanwhile does not show its old state for long.
+    /// Counting pings, not seconds, keeps a Mac waking from sleep from calling
+    /// it gone.
+    private func checkReachable() {
+        let now = Date()
+        guard now.timeIntervalSince(lastPing) >= (isReachable == nil ? 5 : 15) else { return }
+        lastPing = now
+        if unansweredPings >= (isReachable == nil ? 2 : 4), isReachable != false {
+            isReachable = false
+            log.error("\(self.host, privacy: .public) unreachable")
+            DispatchQueue.main.async { self.onReachable?(false) }
+        }
+        unansweredPings += 1
+        transmit(CoAPMessage(kind: .confirmable, code: 0, messageID: nextMessageID(), token: []))
+    }
+
+    /// Anything from the heater proves it is there. Back after being gone, it
+    /// most likely restarted and lost its key and subscription, so start over.
+    private func heard() {
+        unansweredPings = 0
+        guard isReachable != true else { return }
+        let wasGone = isReachable == false
+        isReachable = true
+        DispatchQueue.main.async { self.onReachable?(true) }
+        guard wasGone else { return }
+        log.info("\(self.host, privacy: .public) reachable again")
+        // Its state is unknown now, so a silent one gets the startup wiggle.
+        hasRememberedState = false
+        connect()
     }
 
     private func receive(on connection: NWConnection) {
@@ -188,6 +235,7 @@ final class HeaterLink: @unchecked Sendable {
     }
 
     private func handle(_ message: CoAPMessage) {
+        heard()
         if message.kind == .confirmable {
             transmit(CoAPMessage(kind: .acknowledgement, code: 0, messageID: message.messageID, token: []))
         }
