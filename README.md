@@ -31,7 +31,7 @@ line each time a heater's state changes (room-only changes are not logged).
 | room | D03224 | °C |
 | oscillation | D0320F | 45 on, 0 off |
 | timer_step | D03110 | 0 off, 1 = 30 min, n = n − 1 hours |
-| estimated_watts | | from the level: 900 / 1,100 / 1,900 W, fan 2 W, +3 W oscillating |
+| estimated_watts | | from the level at Philips' rated power: Low 800, Medium 1,200, High 2,000 W (until 2026-10-28 10:4x: measured 900 / 1,100 / 1,900); fan 2 W, +3 W oscillating |
 | outdoor | | °C in Manage, from Open-Meteo (added 2026-10-28 10:1x) |
 | away | | 1 while nobody is at the Mac (see Eco when away) |
 

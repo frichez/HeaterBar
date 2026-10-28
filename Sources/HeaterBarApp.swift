@@ -239,6 +239,7 @@ struct HeaterCard: View {
                     .labelsHidden()
                     .tint(.orange)
                     .disabled(heater.isOn == nil)
+                    .help("Switch the heater on or off")
             }
 
             HStack(alignment: .center) {
@@ -249,6 +250,7 @@ struct HeaterCard: View {
                         .contentTransition(.numericText())
                     Text("Room").font(.caption2).foregroundStyle(.secondary)
                 }
+                .help("Room temperature measured by the heater's own sensor, averaged over the last minute")
                 Spacer()
                 VStack(spacing: 2) {
                     HStack(spacing: 6) {
@@ -261,6 +263,7 @@ struct HeaterCard: View {
                         stepButton("plus", step: 1, limit: HeaterStore.targetRange.upperBound)
                     }
                     Text("Target").font(.caption2).foregroundStyle(.secondary)
+                        .help("The temperature Auto+ keeps. High, Medium and Low heat continuously instead.")
                 }
                 .opacity(isOn ? 1 : 0.6)
             }
@@ -273,7 +276,8 @@ struct HeaterCard: View {
             .opacity(isOn ? 1 : 0.6)
 
             HStack {
-                optionButton("Oscillation", symbol: "arrow.left.and.right", isActive: heater.isOscillating) {
+                optionButton("Oscillation", symbol: "arrow.left.and.right", isActive: heater.isOscillating,
+                             explanation: "Sweeps the airflow from side to side to spread the warmth.") {
                     store.setOscillation($0, for: heater.id)
                 }
                 .opacity(isOn ? 1 : 0.6)
@@ -354,7 +358,7 @@ struct HeaterCard: View {
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
-        .help("Estimated from the heater's power level")
+        .help("Energy and cost today, estimated from the heating level at Philips' rated power (Low 800 W, Medium 1,200 W, High 2,000 W) and €\(String(format: "%.2f", HeaterStore.pricePerKWh))/kWh")
     }
 
     private var timerMenu: some View {
@@ -384,7 +388,7 @@ struct HeaterCard: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(heater.timerMinutesLeft == nil)
-        .help(isActive ? label : "Switch off after a while")
+        .help("Timer: switches the heater off after the chosen time." + (isActive ? " \(label)." : ""))
     }
 
     private static func duration(_ minutes: Int) -> String {
@@ -394,7 +398,7 @@ struct HeaterCard: View {
     }
 
     /// A pill that switches an on/off option; disabled until its state is known.
-    private func optionButton(_ title: String, symbol: String, isActive state: Bool?,
+    private func optionButton(_ title: String, symbol: String, isActive state: Bool?, explanation: String,
                               set: @escaping (Bool) -> Void) -> some View {
         let isActive = state ?? false
         return Button {
@@ -410,7 +414,7 @@ struct HeaterCard: View {
         }
         .buttonStyle(.plain)
         .disabled(state == nil)
-        .help("\(title): \(isActive ? "on" : "off")")
+        .help("\(title) (\(isActive ? "on" : "off")): \(explanation)")
     }
 
     private func modeButton(_ mode: HeaterMode) -> some View {
@@ -440,7 +444,7 @@ struct HeaterCard: View {
         }
         .buttonStyle(.plain)
         .disabled(heater.mode == nil)
-        .help(isAutoLevel ? "\(mode.label): the level Auto+ is using now" : mode.label)
+        .help(isAutoLevel ? "The level Auto+ is using now. \(mode.explanation)" : mode.explanation)
         .animation(.easeOut(duration: 0.2), value: isAutoLevel)
     }
 
@@ -456,5 +460,6 @@ struct HeaterCard: View {
         }
         .buttonStyle(.plain)
         .disabled(heater.target == nil || heater.target == limit)
+        .help(step < 0 ? "Lower the target by 1°" : "Raise the target by 1°")
     }
 }

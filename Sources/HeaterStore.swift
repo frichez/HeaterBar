@@ -1,4 +1,7 @@
 import AppKit
+import os
+
+private let storeLog = Logger(subsystem: "local.heaterbar", category: "store")
 
 /// D0310C, the mode chosen in Air+. Each heating mode also sets D0310A to 3
 /// (heater); ventilation sets it to 1 (fan only).
@@ -16,6 +19,23 @@ enum HeaterMode: Int, CaseIterable {
         case .medium: return "thermometer.medium"
         case .low: return "thermometer.low"
         case .ventilation: return "fan"
+        }
+    }
+
+    /// What each mode does, after Philips' own explanations in Air+.
+    var explanation: String {
+        switch self {
+        case .auto:
+            return "Auto+ (Philips Eco AI): keeps the target temperature by choosing the heating level itself and "
+                + "switching on and off as needed. It learns your usage patterns and follows the weather to save energy."
+        case .high:
+            return "High: heats continuously at 2,000 W. Warms the room fastest."
+        case .medium:
+            return "Medium: heats continuously at 1,200 W. Balanced warmth for less energy than High."
+        case .low:
+            return "Low: heats continuously at 800 W. Gentle warmth with the lowest consumption."
+        case .ventilation:
+            return "Fan: no heating, only a gentle airflow for warm days."
         }
     }
 
@@ -96,10 +116,12 @@ final class HeaterStore: ObservableObject {
     /// Electricity price, euros per kWh.
     static let pricePerKWh = 0.39
 
-    /// Watts drawn at each output level (D0310D), measured on the CX3120 with a
-    /// plug meter: 1–3 are the heating levels, 4 is fan only. Idle and standby
-    /// read 0 W, below the meter's range. The oscillation motor adds about 3 W.
-    private static let wattsByLevel: [Int: Double] = [1: 900, 2: 1100, 3: 1900, 4: 2]
+    /// Watts drawn at each output level (D0310D): 1–3 are the heating levels at
+    /// Philips' rated power (Low 800, Medium 1,200, High 2,000 W; a plug meter
+    /// read 900, 1,100 and 1,900 on the CX3120), 4 is fan only, as measured.
+    /// Idle and standby read 0 W, below the meter's range. The oscillation
+    /// motor adds about 3 W, also measured.
+    private static let wattsByLevel: [Int: Double] = [1: 800, 2: 1200, 3: 2000, 4: 2]
     private static let oscillationWatts = 3.0
 
     static func watts(for heater: HeaterState, level: Int?) -> Double {
@@ -133,6 +155,8 @@ final class HeaterStore: ObservableObject {
     /// The power each heater was last drawing, and since when: the energy
     /// between two statuses is that power over the time between them.
     private var lastPower: [String: (watts: Double, since: Date)] = [:]
+    /// Power as the heater last reported it, before any optimistic display.
+    private var reportedPower: [String: Bool] = [:]
     private var statusLog = StatusLog()
     private var roomReadings: [String: [(time: Date, value: Double)]] = [:]
 
@@ -171,7 +195,9 @@ final class HeaterStore: ObservableObject {
         awayActions = savedActions.compactMapValues(AwayAction.init)
         awayRestore = UserDefaults.standard.dictionary(forKey: Self.awayRestoreKey) as? [String: [String: Int]] ?? [:]
         presence.onChange = { [weak self] away in self?.presenceChanged(away) }
-        presence.start()
+        // Heaters still set back from before a restart must come back on return.
+        isAway = !awayRestore.isEmpty
+        presence.start(away: isAway)
         // Open-Meteo updates every 15 minutes; a failed fetch retries sooner.
         Task { @MainActor in
             while true {
@@ -206,8 +232,20 @@ final class HeaterStore: ObservableObject {
         links.values.forEach { $0.refresh() }
     }
 
-    func setPower(_ isOn: Bool, for id: String) {
-        send(["D03102": isOn ? 1 : 0], to: id, isOn: isOn)
+    /// A heater has been seen to answer "success" to power on and stay off, so
+    /// five seconds later the reported power is checked and the command sent
+    /// once more if it did not take.
+    func setPower(_ isOn: Bool, for id: String, isRetry: Bool = false) {
+        send(["D03102": isOn ? 1 : 0], to: id, isOn: isOn) { [weak self] ok in
+            guard ok, !isRetry else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                MainActor.assumeIsolated {
+                    guard let self, let reported = self.reportedPower[id], reported != isOn else { return }
+                    storeLog.error("\(id, privacy: .public) still reports power \(reported) after a successful command; sending it again")
+                    self.setPower(isOn, for: id, isRetry: true)
+                }
+            }
+        }
     }
 
     func adjustTarget(by step: Int, for id: String) {
@@ -372,6 +410,7 @@ final class HeaterStore: ObservableObject {
 
         if let power = status["D03102"] as? Int {
             let isOn = power != 0
+            if cachedTime == nil { reportedPower[id] = isOn }
             if pending?.isOn == nil || pending?.isOn == isOn { heaters[index].isOn = isOn }
         }
         if let target = status["D0310E"] as? Int {

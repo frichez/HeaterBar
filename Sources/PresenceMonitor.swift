@@ -17,7 +17,10 @@ final class PresenceMonitor {
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
 
-    func start() {
+    /// `away` carries over a departure from before a restart, so that the next
+    /// sign of someone at the Mac counts as a return.
+    func start(away: Bool) {
+        isAway = away
         let distributed = DistributedNotificationCenter.default()
         observers.append(distributed.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.setLocked(true) }

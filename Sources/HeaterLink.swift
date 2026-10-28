@@ -200,7 +200,9 @@ final class HeaterLink: @unchecked Sendable {
             queued.forEach { control($0.values, retry: false, completion: $0.completion) }
         } else if let completion = pending.removeValue(forKey: message.token) {
             let ok = message.code == CoAPMessage.content && text.contains("success")
-            if !ok {
+            if ok {
+                log.info("\(self.host, privacy: .public) command accepted")
+            } else {
                 log.error("\(self.host, privacy: .public) command refused (code \(message.code)): \(String(text.prefix(120)), privacy: .public)")
             }
             completion(ok)
@@ -325,7 +327,7 @@ final class HeaterLink: @unchecked Sendable {
         let token = Self.newToken()
         pending[token] = completion
         // Every command makes the heater beep, so each one is accounted for.
-        log.info("\(self.host, privacy: .public) command \(values.keys.sorted().joined(separator: ","), privacy: .public)")
+        log.info("\(self.host, privacy: .public) command \(String(decoding: body, as: UTF8.self), privacy: .public) with key \(next, privacy: .public)")
         transmit(.request(CoAPMessage.post, path: "sys/dev/control", messageID: nextMessageID(),
                           token: token, payload: encrypted))
         queue.asyncAfter(deadline: .now() + 3) { [weak self] in
