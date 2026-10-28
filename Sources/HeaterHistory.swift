@@ -1,0 +1,73 @@
+import Foundation
+
+struct TemperatureSample: Codable, Identifiable {
+    var time: Date
+    var room: Double
+    var target: Int?
+    var isHeating: Bool
+    /// Estimated energy used during this minute (absent in older files).
+    var energyWh: Double?
+    /// Outdoor temperature at the time, for analysis (absent in older files).
+    var outdoor: Double?
+
+    var id: Date { time }
+}
+
+/// One room-temperature reading per heater per minute, kept for a day and saved
+/// so the graph survives restarts. The heaters only report the present, so the
+/// history starts when HeaterBar does.
+struct HeaterHistory {
+    static let retention: TimeInterval = 24 * 3600
+
+    private(set) var samples: [String: [TemperatureSample]] = [:]
+
+    private static var fileURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("HeaterBar/history.json")
+    }
+
+    static func load() -> HeaterHistory {
+        var history = HeaterHistory()
+        if let data = try? Data(contentsOf: fileURL),
+           let samples = try? JSONDecoder().decode([String: [TemperatureSample]].self, from: data) {
+            history.samples = samples
+        }
+        return history
+    }
+
+    /// Folds a reading into the current minute's sample. Returns true when it
+    /// opened a new minute, which is when the history is worth saving.
+    mutating func record(room: Double, target: Int?, isHeating: Bool, energyWh: Double, outdoor: Double?,
+                         for id: String, at now: Date = Date()) -> Bool {
+        let minute = Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 60).rounded(.down) * 60)
+        var list = samples[id] ?? []
+        let opened: Bool
+        if let last = list.last, last.time == minute {
+            // Any heating within the minute counts, so short bursts still show.
+            list[list.count - 1] = TemperatureSample(time: minute, room: room, target: target,
+                                                     isHeating: last.isHeating || isHeating,
+                                                     energyWh: (last.energyWh ?? 0) + energyWh,
+                                                     outdoor: outdoor ?? last.outdoor)
+            opened = false
+        } else {
+            list.append(TemperatureSample(time: minute, room: room, target: target, isHeating: isHeating,
+                                          energyWh: energyWh, outdoor: outdoor))
+            opened = true
+        }
+        list.removeAll { now.timeIntervalSince($0.time) > Self.retention }
+        samples[id] = list
+        return opened
+    }
+
+    /// Energy used since local midnight, in watt-hours.
+    func energyToday(for id: String, now: Date = Date()) -> Double {
+        let midnight = Calendar.current.startOfDay(for: now)
+        return (samples[id] ?? []).filter { $0.time >= midnight }.reduce(0) { $0 + ($1.energyWh ?? 0) }
+    }
+
+    func save() {
+        let url = Self.fileURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? JSONEncoder().encode(samples).write(to: url, options: .atomic)
+    }
+}

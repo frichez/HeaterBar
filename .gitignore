@@ -1,0 +1,7 @@
+# Built app
+build/
+
+# Personal data: home temperatures and when nobody is at the Mac
+logs/
+
+.DS_Store

@@ -1,0 +1,49 @@
+# HeaterBar
+
+A macOS menu bar app for Philips Wi-Fi heaters (tested with CX3120 and CX5120).
+It talks to them directly on the local network, no Philips account or cloud.
+
+```sh
+./build.sh --run
+```
+
+- Heaters are found automatically on the Mac's local network and remembered.
+- Local protocol: CoAP on UDP 5683, encrypted as in the open-source `aioairctrl`.
+  Status keys: `D03102` power, `D0310E` target °C, `D03224` room °C × 10.
+- Some models (CX5120) publish their status only after a command, so the app
+  sends an empty one to ask. Their first reading can take 10–15 seconds.
+- Each heater is always reached from the same local port and subscription token,
+  so restarts replace the old subscription instead of piling up new ones.
+
+## Logs for analysis
+
+`~/Library/Application Support/HeaterBar/logs/YYYY-MM-DD.csv`, kept 30 days: one
+line each time a heater's state changes (room-only changes are not logged).
+
+| Column | Code | Values |
+|---|---|---|
+| power | D03102 | 1 on, 0 off |
+| selected_mode | D0310C | 0 Auto+, 65 High, 67 Medium, 66 Low, −127 Fan (−16 when off) |
+| running_mode | D0313F | what actually runs: 65/66/67 heating, −16 Auto+ idle, 0 fan |
+| level | D0310D | 1–3 heating power, 4 fan, 0 idle |
+| function | D0310A | 3 heater, 1 fan only |
+| target | D0310E | °C |
+| room | D03224 | °C |
+| oscillation | D0320F | 45 on, 0 off |
+| timer_step | D03110 | 0 off, 1 = 30 min, n = n − 1 hours |
+| estimated_watts | | from the level: 900 / 1,100 / 1,900 W, fan 2 W, +3 W oscillating |
+| outdoor | | °C in Manage, from Open-Meteo (added 2026-10-28 10:1x) |
+| away | | 1 while nobody is at the Mac (see Eco when away) |
+
+## Eco when away
+
+The leaf button on the Office card (the room this Mac is in) chooses what that heater does while nobody is at the
+Mac: nothing, lower the target by 2° or 4°, or switch off. Away means the screen
+locked, or no keyboard or mouse input, for 10 minutes, or the Mac going to sleep
+(acted on at once). Back means unlocked and used again: the target is restored,
+or the heater switched back on, unless it was changed meanwhile. Only heaters
+that are on are touched; each change is a command, so it beeps.
+
+`history.json` in the same folder holds one reading per minute (room, target,
+heating, energy) for the graph. `logs/2026-10-28-office-raw-status.log` in this
+project is the raw capture from the day the codes were mapped.

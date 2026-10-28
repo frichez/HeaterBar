@@ -1,0 +1,84 @@
+import Foundation
+
+/// A CSV line each time a heater's state changes, one file per day under
+/// ~/Library/Application Support/HeaterBar/logs, kept 30 days: enough to study
+/// later how the heaters behave (which levels Auto+ uses, how long it heats).
+/// The room temperature rides along on each line but changes alone do not
+/// write one; the per-minute history already has it.
+struct StatusLog {
+    static let columns = [
+        "time", "heater", "power", "selected_mode", "running_mode", "level", "function",
+        "target", "room", "oscillation", "timer_step", "estimated_watts", "outdoor", "away",
+    ]
+    private static let keys = ["D03102", "D0310C", "D0313F", "D0310D", "D0310A", "D0310E", "D0320F", "D03110"]
+    private static let retentionDays = 30
+
+    private var lastLine: [String: [String]] = [:]
+
+    /// Local time, as a spreadsheet reads it.
+    private static let timeFormat: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter
+    }()
+    private static let dayFormat: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    /// The app's own copy, pruned after 30 days, and a permanent archive in the
+    /// project folder for analysis.
+    private static let folders: [(url: URL, prunes: Bool)] = {
+        let manager = FileManager.default
+        return [
+            (manager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("HeaterBar/logs"), true),
+            (manager.homeDirectoryForCurrentUser.appendingPathComponent("Projects/HeaterBar/logs"), false),
+        ]
+    }()
+
+    mutating func record(_ status: [String: Any], heater: String, room: Double?, watts: Double,
+                         outdoor: Double?, away: Bool, at now: Date = Date()) {
+        // Presence is part of the state: leaving and returning are worth a line.
+        let values = Self.keys.map { status[$0].map { "\($0)" } ?? "" } + [away ? "1" : "0"]
+        guard lastLine[heater] != values else { return }
+        lastLine[heater] = values
+        let time = Self.timeFormat.string(from: now)
+        let room = room.map { String(format: "%.1f", $0) } ?? ""
+        let outdoor = outdoor.map { String(format: "%.1f", $0) } ?? ""
+        // Columns: power … target (values 0–5), room, oscillation and timer (6–7),
+        // watts, outdoor, away (8).
+        let fields = [time, heater.replacingOccurrences(of: ",", with: " ")] + values[0...5] + [room]
+            + values[6...7] + [String(Int(watts.rounded())), outdoor, values[8]]
+        Self.append(fields.joined(separator: ","), day: now)
+    }
+
+    private static func append(_ line: String, day: Date) {
+        let name = dayFormat.string(from: day) + ".csv"
+        let manager = FileManager.default
+        for folder in folders {
+            let url = folder.url.appendingPathComponent(name)
+            if !manager.fileExists(atPath: url.path) {
+                try? manager.createDirectory(at: folder.url, withIntermediateDirectories: true)
+                try? (columns.joined(separator: ",") + "\n").write(to: url, atomically: true, encoding: .utf8)
+                if folder.prunes { prune(folder.url) }
+            }
+            guard let handle = try? FileHandle(forWritingTo: url) else { continue }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data((line + "\n").utf8))
+            try? handle.close()
+        }
+    }
+
+    private static func prune(_ folder: URL) {
+        let cutoff = Date().addingTimeInterval(-Double(retentionDays) * 86_400)
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for file in files where file.pathExtension == "csv" {
+            let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if let modified, modified < cutoff { try? FileManager.default.removeItem(at: file) }
+        }
+    }
+}
