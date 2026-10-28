@@ -5,11 +5,26 @@ import SwiftUI
 struct HeaterBarApp: App {
     @StateObject private var store = HeaterStore()
 
+    /// Menu bar symbols are drawn as monochrome templates; this one keeps its
+    /// orange so heating shows at a glance.
+    private static let heatingIcon: NSImage = {
+        let configuration = NSImage.SymbolConfiguration(paletteColors: [.systemOrange])
+        let image = NSImage(systemSymbolName: "heater.vertical.fill", accessibilityDescription: "Heating")?
+            .withSymbolConfiguration(configuration) ?? NSImage()
+        image.isTemplate = false
+        return image
+    }()
+
     var body: some Scene {
         MenuBarExtra {
             HeaterPanel(store: store)
         } label: {
-            Image(systemName: store.heatersHeating > 0 ? "heater.vertical.fill" : "heater.vertical")
+            // Outlined when all are off, filled when one is on, orange when one heats.
+            if store.heatersHeating > 0 {
+                Image(nsImage: Self.heatingIcon)
+            } else {
+                Image(systemName: store.heatersOn > 0 ? "heater.vertical.fill" : "heater.vertical")
+            }
         }
         .menuBarExtraStyle(.window)
     }

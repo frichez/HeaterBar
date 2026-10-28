@@ -8,7 +8,7 @@ import Foundation
 struct StatusLog {
     static let columns = [
         "time", "heater", "power", "selected_mode", "running_mode", "level", "function",
-        "target", "room", "oscillation", "timer_step", "estimated_watts", "outdoor", "away",
+        "target", "room", "oscillation", "timer_step", "estimated_watts", "outdoor", "away", "event",
     ]
     private static let keys = ["D03102", "D0310C", "D0313F", "D0310D", "D0310A", "D0310E", "D0320F", "D03110"]
     private static let retentionDays = 30
@@ -52,7 +52,17 @@ struct StatusLog {
         // Columns: power … target (values 0–5), room, oscillation and timer (6–7),
         // watts, outdoor, away (8).
         let fields = [time, heater.replacingOccurrences(of: ",", with: " ")] + values[0...5] + [room]
-            + values[6...7] + [String(Int(watts.rounded())), outdoor, values[8]]
+            + values[6...7] + [String(Int(watts.rounded())), outdoor, values[8], ""]
+        Self.append(fields.joined(separator: ","), day: now)
+    }
+
+    /// A command HeaterBar sent, on a line of its own with only the event
+    /// column filled, e.g. "command D03102=1 (eco: you are back): accepted".
+    func recordCommand(_ description: String, reason: String, result: String, heater: String, at now: Date = Date()) {
+        let event = "command \(description) (\(reason)): \(result)"
+            .replacingOccurrences(of: ",", with: ";").replacingOccurrences(of: "\"", with: "")
+        let fields = [Self.timeFormat.string(from: now), heater.replacingOccurrences(of: ",", with: " ")]
+            + Array(repeating: "", count: Self.columns.count - 3) + [event]
         Self.append(fields.joined(separator: ","), day: now)
     }
 

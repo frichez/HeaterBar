@@ -157,6 +157,8 @@ final class HeaterStore: ObservableObject {
     private var lastPower: [String: (watts: Double, since: Date)] = [:]
     /// Power as the heater last reported it, before any optimistic display.
     private var reportedPower: [String: Bool] = [:]
+    /// Counts power commands per heater, so a check knows when it is stale.
+    private var powerRequests: [String: Int] = [:]
     private var statusLog = StatusLog()
     private var roomReadings: [String: [(time: Date, value: Double)]] = [:]
 
@@ -234,15 +236,19 @@ final class HeaterStore: ObservableObject {
 
     /// A heater has been seen to answer "success" to power on and stay off, so
     /// five seconds later the reported power is checked and the command sent
-    /// once more if it did not take.
-    func setPower(_ isOn: Bool, for id: String, isRetry: Bool = false) {
-        send(["D03102": isOn ? 1 : 0], to: id, isOn: isOn) { [weak self] ok in
+    /// once more if it did not take, unless a newer power command has been
+    /// sent since: the check must never undo a later click.
+    func setPower(_ isOn: Bool, for id: String, reason: String = "you", isRetry: Bool = false) {
+        let request = (powerRequests[id] ?? 0) + 1
+        powerRequests[id] = request
+        send(["D03102": isOn ? 1 : 0], to: id, reason: isRetry ? reason + ", power check" : reason, isOn: isOn) { [weak self] ok in
             guard ok, !isRetry else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 MainActor.assumeIsolated {
-                    guard let self, let reported = self.reportedPower[id], reported != isOn else { return }
+                    guard let self, self.powerRequests[id] == request,
+                          let reported = self.reportedPower[id], reported != isOn else { return }
                     storeLog.error("\(id, privacy: .public) still reports power \(reported) after a successful command; sending it again")
-                    self.setPower(isOn, for: id, isRetry: true)
+                    self.setPower(isOn, for: id, reason: reason, isRetry: true)
                 }
             }
         }
@@ -269,12 +275,12 @@ final class HeaterStore: ObservableObject {
     private func rearmHeating(_ id: String) {
         guard let link = links[id] else { return }
         holdPower(on: id)
-        link.send(["D03102": 0]) { [weak self] ok in
+        link.send(["D03102": 0], reason: "re-arm after fan (off)") { [weak self] ok in
             guard ok else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 MainActor.assumeIsolated {
                     self?.holdPower(on: id)
-                    link.send(["D03102": 1]) { _ in }
+                    link.send(["D03102": 1], reason: "re-arm after fan (on)") { _ in }
                 }
             }
         }
@@ -313,21 +319,21 @@ final class HeaterStore: ObservableObject {
                     continue
                 case .switchOff:
                     awayRestore[heater.id] = ["power": 1]
-                    setPower(false, for: heater.id)
+                    setPower(false, for: heater.id, reason: "eco: you left the Mac")
                 case let action:
                     guard let target = heater.target, let degrees = action.degrees else { continue }
                     let setback = max(Self.targetRange.lowerBound, target - degrees)
                     awayRestore[heater.id] = ["target": target, "setback": setback]
-                    send(["D0310E": setback], to: heater.id, target: setback)
+                    send(["D0310E": setback], to: heater.id, reason: "eco: you left the Mac", target: setback)
                 }
             }
         } else {
             for (id, restore) in awayRestore {
                 guard let heater = heaters.first(where: { $0.id == id }) else { continue }
                 if let target = restore["target"], heater.target == restore["setback"] {
-                    send(["D0310E": target], to: id, target: target)
+                    send(["D0310E": target], to: id, reason: "eco: you are back", target: target)
                 } else if restore["power"] == 1, heater.isOn == false {
-                    setPower(true, for: id)
+                    setPower(true, for: id, reason: "eco: you are back")
                 }
             }
             awayRestore = [:]
@@ -356,7 +362,7 @@ final class HeaterStore: ObservableObject {
         step <= 0 ? 0 : step == 1 ? 30 : (step - 1) * 60
     }
 
-    private func send(_ values: [String: Any], to id: String, isOn: Bool? = nil, target: Int? = nil,
+    private func send(_ values: [String: Any], to id: String, reason: String = "you", isOn: Bool? = nil, target: Int? = nil,
                       mode: HeaterMode? = nil, isOscillating: Bool? = nil,
                       completion: ((Bool) -> Void)? = nil) {
         guard let index = heaters.firstIndex(where: { $0.id == id }), let link = links[id] else { return }
@@ -374,7 +380,7 @@ final class HeaterStore: ObservableObject {
         change.since = Date()
         pendingChanges[id] = change
 
-        link.send(values) { [weak self] ok in
+        link.send(values, reason: reason) { [weak self] ok in
             MainActor.assumeIsolated {
                 completion?(ok)
                 guard let self, !ok, let index = self.heaters.firstIndex(where: { $0.id == id }) else { return }
@@ -393,6 +399,12 @@ final class HeaterStore: ObservableObject {
         let id = heater.id
         link.onStatus = { [weak self] status in
             MainActor.assumeIsolated { self?.apply(status, to: id) }
+        }
+        link.onCommand = { [weak self] description, reason, result in
+            MainActor.assumeIsolated {
+                guard let self, let name = self.heaters.first(where: { $0.id == id })?.name else { return }
+                self.statusLog.recordCommand(description, reason: reason, result: result, heater: name)
+            }
         }
         links[id] = link
         link.seed(target: heater.target, timerMinutesLeft: heater.timerMinutesLeft)

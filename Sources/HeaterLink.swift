@@ -11,6 +11,10 @@ final class HeaterLink: @unchecked Sendable {
     let host: String
     /// The heater's "reported" state, each time it publishes one.
     var onStatus: (([String: Any]) -> Void)?
+    /// Each command sent (e.g. "D03102=1"), why, and how the heater answered:
+    /// "accepted", "refused: …" or "no reply". Every command beeps, so each
+    /// one is accounted for in the log.
+    var onCommand: ((_ description: String, _ reason: String, _ result: String) -> Void)?
 
     /// A heater remembers every subscriber (address, port and token) and keeps
     /// pushing to it long after it is gone; enough stale ones and it stops
@@ -26,6 +30,8 @@ final class HeaterLink: @unchecked Sendable {
     private var messageID = UInt16.random(in: .min ... .max)
     private var syncToken: [UInt8] = []
     private var pending: [[UInt8]: (Bool) -> Void] = [:]
+    /// What each command in flight was and why it was sent, for `onCommand`.
+    private var pendingInfo: [[UInt8]: (description: String, reason: String)] = [:]
     /// When the last status arrived on this connection; nil until the first.
     private var lastStatus: Date?
     private var syncAttempts = 0
@@ -41,7 +47,7 @@ final class HeaterLink: @unchecked Sendable {
     private var wiggling: (key: String, temporary: Int, real: Int)?
     /// The panel already shows the last session's state, so launch needs no wiggle.
     private var hasRememberedState = false
-    private var retryAfterSync: [UUID: (values: [String: Any], completion: (Bool) -> Void)] = [:]
+    private var retryAfterSync: [UUID: (values: [String: Any], reason: String, completion: (Bool) -> Void)] = [:]
 
     init(host: String, deviceID: String) {
         self.host = host
@@ -84,9 +90,9 @@ final class HeaterLink: @unchecked Sendable {
     }
 
     /// Sets values in the heater's desired state, e.g. `["D03102": 1]`.
-    func send(_ values: [String: Any], completion: @escaping (Bool) -> Void) {
+    func send(_ values: [String: Any], reason: String, completion: @escaping (Bool) -> Void) {
         queue.async {
-            self.control(values) { ok in
+            self.control(values, reason: reason) { ok in
                 if ok {
                     // A wiggle before the heater reports must restore these.
                     self.lastTarget = values["D0310E"] as? Int ?? self.lastTarget
@@ -197,7 +203,7 @@ final class HeaterLink: @unchecked Sendable {
             subscribe()
             let queued = retryAfterSync.values
             retryAfterSync = [:]
-            queued.forEach { control($0.values, retry: false, completion: $0.completion) }
+            queued.forEach { control($0.values, reason: $0.reason, retry: false, completion: $0.completion) }
         } else if let completion = pending.removeValue(forKey: message.token) {
             let ok = message.code == CoAPMessage.content && text.contains("success")
             if ok {
@@ -205,6 +211,7 @@ final class HeaterLink: @unchecked Sendable {
             } else {
                 log.error("\(self.host, privacy: .public) command refused (code \(message.code)): \(String(text.prefix(120)), privacy: .public)")
             }
+            reportCommand(message.token, ok ? "accepted" : "refused: " + text.prefix(80))
             completion(ok)
         } else if var status = Self.reportedState(in: text) {
             // Any token: an earlier subscription the heater still remembers
@@ -267,13 +274,13 @@ final class HeaterLink: @unchecked Sendable {
         lastWiggle = Date()
         wiggling = change
         log.info("\(self.host, privacy: .public) wiggling \(change.key, privacy: .public) \(change.real) → \(change.temporary) → \(change.real)")
-        control([change.key: change.temporary]) { [weak self] ok in
+        control([change.key: change.temporary], reason: "wiggle (asks the heater to report)") { [weak self] ok in
             guard let self else { return }
             guard ok else {
                 self.wiggling = nil
                 return
             }
-            self.control([change.key: change.real]) { [weak self] ok in
+            self.control([change.key: change.real], reason: "wiggle (back)") { [weak self] ok in
                 if !ok {
                     log.error("\(self?.host ?? "", privacy: .public) could not restore \(change.key, privacy: .public) to \(change.real)")
                 }
@@ -288,9 +295,9 @@ final class HeaterLink: @unchecked Sendable {
     }
 
     /// Holds a command until the next sync, failing it if none comes in time.
-    private func sendAfterSync(_ values: [String: Any], completion: @escaping (Bool) -> Void) {
+    private func sendAfterSync(_ values: [String: Any], reason: String, completion: @escaping (Bool) -> Void) {
         let id = UUID()
-        retryAfterSync[id] = (values, completion)
+        retryAfterSync[id] = (values, reason, completion)
         queue.asyncAfter(deadline: .now() + 8) { [weak self] in
             self?.retryAfterSync.removeValue(forKey: id)?.completion(false)
         }
@@ -304,15 +311,16 @@ final class HeaterLink: @unchecked Sendable {
     /// A heater keeps a single key, and any client that syncs (the Air+ app,
     /// another tool) replaces it; commands under the old key go unanswered. So
     /// a failed command rejoins and, with `retry`, is sent once more.
-    private func control(_ values: [String: Any], retry: Bool = true, completion: @escaping (Bool) -> Void) {
+    private func control(_ values: [String: Any], reason: String, retry: Bool = true,
+                         completion: @escaping (Bool) -> Void) {
         guard let counter else {
-            retry ? sendAfterSync(values, completion: completion) : completion(false)
+            retry ? sendAfterSync(values, reason: reason, completion: completion) : completion(false)
             return
         }
         let completion: (Bool) -> Void = { [weak self] ok in
             guard let self, !ok, retry else { return completion(ok) }
             log.error("\(self.host, privacy: .public) command failed, rejoining to retry")
-            self.sendAfterSync(values, completion: completion)
+            self.sendAfterSync(values, reason: reason + ", retried", completion: completion)
             self.rejoin()
         }
         let next = PhilipsCrypto.nextCounter(after: counter)
@@ -326,13 +334,21 @@ final class HeaterLink: @unchecked Sendable {
         }
         let token = Self.newToken()
         pending[token] = completion
+        pendingInfo[token] = (values.keys.sorted().map { "\($0)=\(values[$0]!)" }.joined(separator: " "), reason)
         // Every command makes the heater beep, so each one is accounted for.
         log.info("\(self.host, privacy: .public) command \(String(decoding: body, as: UTF8.self), privacy: .public) with key \(next, privacy: .public)")
         transmit(.request(CoAPMessage.post, path: "sys/dev/control", messageID: nextMessageID(),
                           token: token, payload: encrypted))
         queue.asyncAfter(deadline: .now() + 3) { [weak self] in
-            self?.pending.removeValue(forKey: token)?(false)
+            guard let self, let completion = self.pending.removeValue(forKey: token) else { return }
+            self.reportCommand(token, "no reply")
+            completion(false)
         }
+    }
+
+    private func reportCommand(_ token: [UInt8], _ result: String) {
+        guard let info = pendingInfo.removeValue(forKey: token) else { return }
+        DispatchQueue.main.async { self.onCommand?(info.description, info.reason, result) }
     }
 
     private func transmit(_ message: CoAPMessage) {

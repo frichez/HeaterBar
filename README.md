@@ -34,6 +34,7 @@ line each time a heater's state changes (room-only changes are not logged).
 | estimated_watts | | from the level at Philips' rated power: Low 800, Medium 1,200, High 2,000 W (until 2026-10-28 10:4x: measured 900 / 1,100 / 1,900); fan 2 W, +3 W oscillating |
 | outdoor | | °C in Manage, from Open-Meteo (added 2026-10-28 10:1x) |
 | away | | 1 while nobody is at the Mac (see Eco when away) |
+| event | | on lines of their own: each command HeaterBar sent, why, and the heater's answer, e.g. `command D03102=1 (eco: you are back): accepted` |
 
 ## Eco when away
 
