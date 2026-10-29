@@ -1,38 +1,43 @@
 import Charts
 import SwiftUI
 
-/// Room temperature over the chosen range, with the target as a dashed step
-/// line and the minutes the heater was heating shaded behind.
+/// Room temperature over one day, midnight to midnight (to now for today),
+/// with the target as a dashed step line and the minutes the heater was
+/// heating shaded behind. `DayPicker` chooses the day.
 struct TemperatureChart: View {
     let samples: [TemperatureSample]
+    /// 0 for today, 1 for yesterday, and so on.
+    let daysBack: Int
     /// The tallest the plot grows; it shrinks to fit a smaller space.
     var chartHeight: CGFloat = 90
 
-    @AppStorage("chartHours") private var hours = 6
     @State private var selection: Date?
 
-    private var visible: [TemperatureSample] {
-        let start = Date().addingTimeInterval(-Double(hours) * 3600)
-        return samples.filter { $0.time >= start }
+    private var day: DateInterval { Self.day(daysBack) }
+
+    static func day(_ daysBack: Int) -> DateInterval {
+        let calendar = Calendar.current
+        let start = calendar.date(byAdding: .day, value: -daysBack, to: calendar.startOfDay(for: Date()))!
+        return DateInterval(start: start, end: calendar.date(byAdding: .day, value: 1, to: start)!)
     }
+
+    private var visible: [TemperatureSample] {
+        let day = day
+        return samples.filter { $0.time >= day.start && $0.time < day.end }
+    }
+
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Room temperature").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                Spacer()
-                rangePicker
-            }
-
             if visible.count < 2 {
-                Text("Collecting readings, one per minute…")
+                Text(daysBack == 0 ? "Collecting readings, one per minute…" : "No readings that day")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 50, maxHeight: chartHeight)
             } else {
                 chart
                 HStack(spacing: 12) {
-                    legendItem("Room") {
+                    legendItem("Room temperature") {
                         Capsule().fill(Color.primary.opacity(0.85)).frame(width: 12, height: 2)
                     }
                     legendItem("Target") {
@@ -81,10 +86,12 @@ struct TemperatureChart: View {
             }
         }
         .chartYScale(domain: yDomain)
+        // Past days span midnight to midnight, so they compare at a glance.
+        .chartXScale(domain: day.start...(daysBack == 0 ? max(Date(), day.start.addingTimeInterval(3600)) : day.end))
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
                 AxisGridLine().foregroundStyle(Color.primary.opacity(0.06))
-                AxisValueLabel(format: .dateTime.hour().minute())
+                AxisValueLabel(format: .dateTime.hour())
             }
         }
         .chartYAxis {
@@ -96,35 +103,9 @@ struct TemperatureChart: View {
             }
         }
         .chartXSelection(value: $selection)
+        .onChange(of: daysBack) { selection = nil }
         // Up to chartHeight, shrinking to fit the space it is given.
         .frame(minHeight: 50, maxHeight: chartHeight)
-    }
-
-    /// Drawn in SwiftUI: a native segmented control stops taking clicks on the
-    /// back of a flipped card, behind its 3D rotations.
-    private var rangePicker: some View {
-        HStack(spacing: 2) {
-            ForEach([1, 6, 24], id: \.self) { range in
-                let isSelected = hours == range
-                Button {
-                    hours = range
-                } label: {
-                    Text("\(range)h")
-                        .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-                        .frame(width: 30, height: 18)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(isSelected ? Color.primary.opacity(0.12) : Color.clear)
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-            }
-        }
-        .padding(2)
-        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(0.05)))
     }
 
     private func legendItem(_ title: String, @ViewBuilder swatch: () -> some View) -> some View {
@@ -170,5 +151,57 @@ struct TemperatureChart: View {
         let values = visible.map(\.room) + visible.compactMap { $0.target.map(Double.init) }
         guard let low = values.min(), let high = values.max() else { return 15...25 }
         return (low - 0.5).rounded(.down)...(high + 0.5).rounded(.up)
+    }
+}
+
+/// ‹ Today › on the back of a card, where the front has its power switch.
+struct DayPicker: View {
+    @Binding var daysBack: Int
+    let samples: [TemperatureSample]
+
+    /// How many days back the oldest reading is.
+    private var oldestDaysBack: Int {
+        guard let first = samples.first?.time else { return 0 }
+        let calendar = Calendar.current
+        return calendar.dateComponents([.day], from: calendar.startOfDay(for: first),
+                                       to: calendar.startOfDay(for: Date())).day ?? 0
+    }
+
+    /// Drawn in SwiftUI: native controls stop taking clicks on the back of a
+    /// flipped card, behind its 3D rotations.
+    var body: some View {
+        HStack(spacing: 2) {
+            dayArrow("chevron.left", enabled: daysBack < oldestDaysBack) { daysBack += 1 }
+            Text(dayTitle)
+                .font(.system(size: 10, weight: .medium))
+                .frame(minWidth: 64)
+            dayArrow("chevron.right", enabled: daysBack > 0) { daysBack -= 1 }
+        }
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(0.05)))
+    }
+
+    private var dayTitle: String { Self.title(daysBack) }
+
+    static func title(_ daysBack: Int) -> String {
+        switch daysBack {
+        case 0: "Today"
+        case 1: "Yesterday"
+        default: TemperatureChart.day(daysBack).start.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+        }
+    }
+
+    private func dayArrow(_ symbol: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(enabled ? Color.primary : Color.secondary.opacity(0.4))
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
     }
 }

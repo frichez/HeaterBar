@@ -1,7 +1,7 @@
 import Foundation
 
-/// Energy used per heater per day, kept for good (unlike the 24-hour history)
-/// so the panel can show this month and the total since HeaterBar started.
+/// Energy used per heater per day, kept for good (unlike the week-long
+/// history) so the panel can show any day and the total since HeaterBar started.
 struct EnergyLedger {
     /// Watt-hours by local day ("2026-10-28"), then by heater id.
     private(set) var days: [String: [String: Double]] = [:]
@@ -45,6 +45,11 @@ struct EnergyLedger {
         days.filter { $0.key.hasPrefix(prefix) }.values.reduce(0) { total, heaters in
             total + (id.map { heaters[$0] ?? 0 } ?? heaters.values.reduce(0, +))
         }
+    }
+
+    /// Watt-hours on the local day that contains `date`.
+    func energy(for id: String? = nil, on date: Date) -> Double {
+        energy(for: id, prefix: Self.dayFormat.string(from: date))
     }
 
     /// The first day recorded, for "since …".

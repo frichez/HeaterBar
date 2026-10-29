@@ -108,6 +108,11 @@ struct HeaterCard: View {
 
     /// The card turns over to show the temperature graph on its back.
     @State private var isFlipped = false
+    /// The day the graph shows: 0 for today, 1 for yesterday, and so on.
+    @State private var daysBack = 0
+    /// Whether the front's energy line shows the total instead of today;
+    /// a click switches, for every card.
+    @AppStorage("energyShowsTotal") private var energyShowsTotal = false
 
     private func flip() {
         withAnimation(.spring(duration: 0.5, bounce: 0.15)) { isFlipped.toggle() }
@@ -153,13 +158,19 @@ struct HeaterCard: View {
             .animation(.snappy, value: heater.target)
     }
 
+    private var samples: [TemperatureSample] { store.history.samples[heater.id] ?? [] }
+
     private var back: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(heater.name).font(.system(.body, weight: .semibold))
+            HStack {
+                Text(heater.name).font(.system(.body, weight: .semibold))
+                Spacer()
+                DayPicker(daysBack: $daysBack, samples: samples)
+            }
             // The graph takes what the front leaves, so the total and the close
             // button land on the front's last line.
-            TemperatureChart(samples: store.history.samples[heater.id] ?? [], chartHeight: 110)
-            totalRow
+            TemperatureChart(samples: samples, daysBack: daysBack, chartHeight: 130)
+            dayEnergyRow
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // The same corner as the front's graph button, so one spot flips both ways.
@@ -168,14 +179,17 @@ struct HeaterCard: View {
         }
     }
 
-    /// This heater's energy and cost since the first day recorded, on the
+    /// The energy, cost and heating time of the day the graph shows, on the
     /// close button's line.
-    private var totalRow: some View {
-        let kWh = store.energyTotalKWh(for: heater.id)
-        let since = store.ledger.firstDay.map { " on \($0.formatted(date: .abbreviated, time: .omitted))" } ?? ""
+    private var dayEnergyRow: some View {
+        let day = TemperatureChart.day(daysBack)
+        let kWh = store.ledger.energy(for: heater.id, on: day.start) / 1000
+        let minutes = store.history.heatingMinutes(for: heater.id, in: day)
+        let text = String(format: "%@ %.2f kWh · %@", DayPicker.title(daysBack), kWh, HeaterPanel.cost(kWh))
+            + (minutes.map { " · " + Self.heatingTime($0) } ?? "")
         return HStack(spacing: 6) {
             Image(systemName: "bolt.fill").foregroundStyle(.secondary)
-            Text(String(format: "Total %.2f kWh · %@", kWh, HeaterPanel.cost(kWh)))
+            Text(text)
                 .monospacedDigit()
                 .lineLimit(1)
         }
@@ -183,7 +197,12 @@ struct HeaterCard: View {
         .foregroundStyle(.secondary)
         .frame(height: 24)
         .padding(.trailing, 30)
-        .help("Energy and cost since HeaterBar started recording\(since), estimated from the heating level at Philips' rated power and €\(String(format: "%.2f", HeaterStore.pricePerKWh))/kWh")
+        .help("Energy, cost and time spent heating that day, estimated from the heating level at Philips' rated power and €\(String(format: "%.2f", HeaterStore.pricePerKWh))/kWh")
+    }
+
+    /// "1h20" or "25 min".
+    private static func heatingTime(_ minutes: Int) -> String {
+        minutes >= 60 ? String(format: "%dh%02d", minutes / 60, minutes % 60) : "\(minutes) min"
     }
 
     /// Eco when away: what this heater does while nobody is at the Mac.
@@ -261,7 +280,7 @@ struct HeaterCard: View {
                         Text(subtitle)
                     }
                     .font(.caption)
-                    .foregroundStyle(heater.problem == nil ? Color.secondary : Color.red)
+                    .foregroundStyle(heater.problem == nil && heater.faultCode == 0 ? Color.secondary : Color.red)
                 }
                 Spacer()
                 Toggle("Power", isOn: Binding(get: { isOn }, set: { store.setPower($0, for: heater.id) }))
@@ -355,6 +374,7 @@ struct HeaterCard: View {
 
     private var subtitle: String {
         if let problem = heater.problem { return problem }
+        if heater.faultCode != 0 { return "Fault code \(heater.faultCode)" }
         guard heater.isOn != nil else { return "Connecting…" }
         if heater.isStale, let seen = heater.lastSeen {
             return "Last seen \(seen.formatted(date: .omitted, time: .shortened))"
@@ -381,18 +401,34 @@ struct HeaterCard: View {
     }
 
     private var energyRow: some View {
-        let kWh = store.energyTodayKWh(for: heater.id)
-        let minutes = store.history.heatingMinutesToday(for: heater.id)
-        let heating = minutes >= 60 ? String(format: "%dh%02d", minutes / 60, minutes % 60) : "\(minutes) min"
-        return HStack(spacing: 6) {
-            Image(systemName: "bolt.fill").foregroundStyle(heater.isOn == true && heater.isHeating ? Color.orange : Color.secondary)
-            Text(String(format: "Today %.2f kWh · %@ · %@", kWh, HeaterPanel.cost(kWh), heating))
-                .monospacedDigit()
-            Spacer()
+        let text: String
+        let help: String
+        if energyShowsTotal {
+            let kWh = store.energyTotalKWh(for: heater.id)
+            let since = store.ledger.firstDay.map { " on \($0.formatted(date: .abbreviated, time: .omitted))" } ?? ""
+            text = String(format: "Total %.2f kWh · %@", kWh, HeaterPanel.cost(kWh))
+            help = "Energy and cost since HeaterBar started recording\(since)"
+        } else {
+            let kWh = store.energyTodayKWh(for: heater.id)
+            let minutes = store.history.heatingMinutesToday(for: heater.id)
+            text = String(format: "Today %.2f kWh · %@ · %@", kWh, HeaterPanel.cost(kWh), Self.heatingTime(minutes))
+            help = "Energy, cost and time spent heating today"
         }
+        return Button {
+            energyShowsTotal.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "bolt.fill").foregroundStyle(heater.isOn == true && heater.isHeating ? Color.orange : Color.secondary)
+                Text(text)
+                    .monospacedDigit()
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
         .font(.caption2)
         .foregroundStyle(.secondary)
-        .help("Energy, cost and time spent heating today, estimated from the heating level at Philips' rated power (Low 800 W, Medium 1,200 W, High 2,000 W) and €\(String(format: "%.2f", HeaterStore.pricePerKWh))/kWh")
+        .help("\(help), estimated from the heating level at Philips' rated power and €\(String(format: "%.2f", HeaterStore.pricePerKWh))/kWh. Click to switch between today and the total.")
     }
 
     private var timerMenu: some View {

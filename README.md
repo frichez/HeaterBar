@@ -34,7 +34,7 @@ line each time a heater's state changes (room-only changes are not logged).
 | estimated_watts | | from the level at Philips' rated power. CX3120: Low 800, Medium 1,200, High 2,000 W, fan 2 W (until 2026-10-28 10:4x: measured 900 / 1,100 / 1,900). CX5120: Low 1,200, High 2,000 W, fan 8 W (until 2026-10-28 19:1x it used the CX3120 figures). +3 W oscillating |
 | outdoor | | °C in Manage, from Open-Meteo (added 2026-10-28 10:1x) |
 | away | | 1 while nobody is at the Mac (see Eco when away) |
-| event | | on lines of their own: each command HeaterBar sent, why, and the heater's answer, e.g. `command D03102=1 (eco: you are back): accepted` |
+| event | | on lines of their own: each command HeaterBar sent, why, and the heater's answer, e.g. `command D03102=1 (eco: you are back): accepted`; also `unreachable: no answer to ping`, `reachable again`, and `fault code N` / `fault cleared` (D03240, 0 when all is well; Philips does not document the codes) |
 
 ## Eco when away
 
@@ -45,7 +45,7 @@ locked, or no keyboard or mouse input, for 10 minutes, or the Mac going to sleep
 or the heater switched back on, unless it was changed meanwhile. Only heaters
 that are on are touched; each change is a command, so it beeps.
 
-`history.json` in the same folder holds one reading per minute (room, target,
-heating, energy) for the graph. `energy.json` keeps each heater's energy per day for good,
-for the total on the back of each card. `logs/2026-10-28-office-raw-status.log` in this
+`history.json` in the same folder holds one reading per minute, kept a week (room, target,
+heating, energy) for the graph, which shows one day at a time. `energy.json` keeps each heater's energy per day for good,
+for the total (click the energy line on a card to switch between today and the total) and for the day shown on the back. `logs/2026-10-28-office-raw-status.log` in this
 project is the raw capture from the day the codes were mapped.

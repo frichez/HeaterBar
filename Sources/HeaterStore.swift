@@ -99,6 +99,8 @@ struct HeaterState: Identifiable, Codable {
     var lastSeen: Date?
     var isStale = false
     var problem: String?
+    /// D03240: 0 when all is well. Philips does not document the codes.
+    var faultCode = 0
 
     /// Only where to find the heater is remembered; its state is always live.
     private enum CodingKeys: String, CodingKey { case id, host, name, model }
@@ -528,12 +530,18 @@ final class HeaterStore: ObservableObject {
         }
         if let name = status["D01S03"] as? String, !name.isEmpty { heaters[index].name = name }
         heaters[index].problem = nil
+        let previousFault = heaters[index].faultCode
+        if let fault = status["D03240"] as? Int { heaters[index].faultCode = fault }
 
         guard cachedTime == nil else {
             cachedLevel[id] = status["D0310D"] as? Int
             return
         }
         let now = Date()
+        if heaters[index].faultCode != previousFault {
+            statusLog.recordEvent(heaters[index].faultCode == 0 ? "fault cleared" : "fault code \(heaters[index].faultCode)",
+                                  heater: heaters[index].name, at: now)
+        }
         saveLastStatus(status, for: id, at: now)
         let watts = Self.watts(for: heaters[index], level: status["D0310D"] as? Int)
         heaters[index].watts = watts

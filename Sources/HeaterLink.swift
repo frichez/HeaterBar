@@ -48,8 +48,9 @@ final class HeaterLink: @unchecked Sendable {
     private var lastTimerStep: Int?
     private var lastWiggle = Date.distantPast
     private var wiggling: (key: String, temporary: Int, real: Int)?
-    /// The panel already shows the last session's state, so launch needs no wiggle.
-    private var hasRememberedState = false
+    /// Whether the heater's current state is still unknown: at launch, and
+    /// after it was gone. Cleared by its first status.
+    private var needsReport = true
     /// Pings sent since the heater last answered anything. A quiet heater is
     /// normal (some only report changes), so silence alone proves nothing.
     private var unansweredPings = 0
@@ -91,7 +92,6 @@ final class HeaterLink: @unchecked Sendable {
     /// Settings remembered from the last session, until the heater reports.
     func seed(target: Int?, timerMinutesLeft: Int?) {
         queue.async {
-            if target != nil { self.hasRememberedState = true }
             if self.lastTarget == nil { self.lastTarget = target }
             // Only "no timer" matters here: any running one rules the timer out.
             if self.lastTimerStep == nil, let minutes = timerMinutesLeft { self.lastTimerStep = minutes > 0 ? 1 : 0 }
@@ -212,7 +212,7 @@ final class HeaterLink: @unchecked Sendable {
         guard wasGone else { return }
         log.info("\(self.host, privacy: .public) reachable again")
         // Its state is unknown now, so a silent one gets the startup wiggle.
-        hasRememberedState = false
+        needsReport = true
         connect()
     }
 
@@ -274,6 +274,7 @@ final class HeaterLink: @unchecked Sendable {
                 lastTimerStep = status["D03110"] as? Int ?? lastTimerStep
             }
             lastStatus = Date()
+            needsReport = false
             quietChecks = 0
             nextAsk = .distantPast
             askInterval = 5
@@ -293,19 +294,21 @@ final class HeaterLink: @unchecked Sendable {
     private func subscribe() {
         nextAsk = Date().addingTimeInterval(askInterval)
         observe()
-        // A heater never seen before that stays silent gets one wiggle.
+        // A heater that stays silent at launch, or back after being gone, gets
+        // one wiggle so its real state is known (it beeps; the user accepts it).
         let synced = lastSync
         queue.asyncAfter(deadline: .now() + 15) { [weak self] in
-            guard let self, self.lastSync == synced, self.lastStatus == nil, !self.hasRememberedState else { return }
+            guard let self, self.lastSync == synced, self.lastStatus == nil, self.needsReport else { return }
             self.wiggle()
         }
     }
 
     /// Some models (CX5120) publish only when a setting really changes, or when
-    /// Philips' cloud asks; empty commands do nothing. So a setting is changed
+    /// Philips' cloud asks; empty commands, and a setting sent with the value it
+    /// already has, do nothing (tried 2026-10-29). So a setting is changed
     /// and straight back, and the panel never shows the detour. Each command
     /// beeps (and is likely stored by the heater), so this happens at most every
-    /// five minutes, and only when the panel is opened on stale data. The timer
+    /// five minutes, and only at launch or when the heater is back. The timer
     /// is the safe setting: should the way back fail, the heater only switches
     /// itself off in 30 minutes. With a timer already running, the target moves
     /// a degree instead.

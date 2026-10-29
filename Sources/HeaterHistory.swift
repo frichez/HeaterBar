@@ -13,11 +13,11 @@ struct TemperatureSample: Codable, Identifiable {
     var id: Date { time }
 }
 
-/// One room-temperature reading per heater per minute, kept for a day and saved
-/// so the graph survives restarts. The heaters only report the present, so the
+/// One room-temperature reading per heater per minute, kept a week and saved
+/// so the graph survives restarts and can show the days before. The heaters only report the present, so the
 /// history starts when HeaterBar does.
 struct HeaterHistory {
-    static let retention: TimeInterval = 24 * 3600
+    static let retention: TimeInterval = 7 * 24 * 3600
 
     private(set) var samples: [String: [TemperatureSample]] = [:]
 
@@ -67,8 +67,15 @@ struct HeaterHistory {
 
     /// Minutes spent heating since local midnight.
     func heatingMinutesToday(for id: String, now: Date = Date()) -> Int {
-        let midnight = Calendar.current.startOfDay(for: now)
-        return (samples[id] ?? []).filter { $0.time >= midnight && $0.isHeating }.count
+        heatingMinutes(for: id, in: DateInterval(start: Calendar.current.startOfDay(for: now), end: now)) ?? 0
+    }
+
+    /// Minutes spent heating within `interval`; nil when no reading that old
+    /// is kept any more.
+    func heatingMinutes(for id: String, in interval: DateInterval) -> Int? {
+        let list = samples[id] ?? []
+        guard let first = list.first, first.time < interval.end else { return nil }
+        return list.filter { interval.contains($0.time) && $0.isHeating }.count
     }
 
     func save() {
