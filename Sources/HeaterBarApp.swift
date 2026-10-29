@@ -207,14 +207,35 @@ struct HeaterCard: View {
 
     /// Eco when away: what this heater does while nobody is at the Mac.
     private var ecoMenu: some View {
-        let action = store.awayActions[heater.id] ?? .none
-        let isEnabled = action != .none
+        // Outside the Mac's room only auto-off: presence says nothing there.
+        let followsPresence = store.followsPresence(heater)
+        let action = followsPresence ? store.awayActions[heater.id] ?? .none : .none
+        let offStep = store.awayOffSteps[heater.id]
+        let choices = HeaterStore.awayOffChoices(for: heater)
+        let offLabel = choices.first { $0.step == offStep }?.label
+        let isEnabled = action != .none || offStep != nil
         return Menu {
-            ForEach(AwayAction.allCases, id: \.self) { choice in
-                Button {
-                    store.setAwayAction(choice, for: heater.id)
-                } label: {
-                    if choice == action { Label(choice.label, systemImage: "checkmark") } else { Text(choice.label) }
+            if followsPresence {
+                Section("When you leave the Mac") {
+                    ForEach(AwayAction.allCases, id: \.self) { choice in
+                        Button {
+                            store.setAwayAction(choice, for: heater.id)
+                        } label: {
+                            if choice == action { Label(choice.label, systemImage: "checkmark") } else { Text(choice.label) }
+                        }
+                    }
+                }
+            }
+            if action != .switchOff {
+                Section(followsPresence ? "Switch off if away for" : "Switch off after being on for") {
+                    ForEach([(label: "Never", step: nil as Int?)] + choices.map { ($0.label, Optional($0.step)) },
+                            id: \.label) { choice in
+                        Button {
+                            store.setAwayOff(step: choice.step, for: heater.id)
+                        } label: {
+                            if choice.step == offStep { Label(choice.label, systemImage: "checkmark") } else { Text(choice.label) }
+                        }
+                    }
                 }
             }
         } label: {
@@ -231,8 +252,15 @@ struct HeaterCard: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help(isEnabled
-              ? "When you leave the Mac: \(action.label.lowercased()), restored when you are back"
+        .help(!followsPresence
+              ? offLabel.map { "Auto-off: whenever it is switched on, its timer is set to \($0)" }
+                  ?? "Auto-off: set its timer whenever it is switched on, so it is never forgotten on"
+              : isEnabled
+              ? "When you leave the Mac: "
+                + [action == .none ? nil : action.label.lowercased(),
+                   action == .switchOff ? nil : offLabel.map { "switch off after \($0) away" }]
+                    .compactMap { $0 }.joined(separator: ", ")
+                + "; put back when you are back"
               : "Eco when away: save energy while you are not at the Mac")
     }
 
@@ -341,9 +369,7 @@ struct HeaterCard: View {
                     .opacity(isOn ? 1 : 0.6)
                 Spacer()
                 // Right above the graph button.
-                if store.followsPresence(heater) {
-                    ecoMenu
-                }
+                ecoMenu
             }
 
             HStack(alignment: .center, spacing: 6) {

@@ -34,7 +34,7 @@ line each time a heater's state changes (room-only changes are not logged).
 | estimated_watts | | from the level at Philips' rated power. CX3120: Low 800, Medium 1,200, High 2,000 W, fan 2 W (until 2026-10-28 10:4x: measured 900 / 1,100 / 1,900). CX5120: Low 1,200, High 2,000 W, fan 8 W (until 2026-10-28 19:1x it used the CX3120 figures). +3 W oscillating |
 | outdoor | | °C in Manage, from Open-Meteo (added 2026-10-28 10:1x) |
 | away | | 1 while nobody is at the Mac (see Eco when away) |
-| event | | on lines of their own: each command HeaterBar sent, why, and the heater's answer, e.g. `command D03102=1 (eco: you are back): accepted`; also `unreachable: no answer to ping`, `reachable again`, and `fault code N` / `fault cleared` (D03240, 0 when all is well; Philips does not document the codes) |
+| event | | on lines of their own: each command HeaterBar sent, why, and the heater's answer, e.g. `command D03102=1 (eco: you are back): accepted`; a command re-sent because the heater accepted it but reported otherwise 12 s later ends in `, check`, and `check: no report since …; not sent again` when a heater that only reports changes (CX5120) stayed silent; also `unreachable: no answer to ping`, `reachable again`, and `fault code N` / `fault cleared` (D03240, 0 when all is well; Philips does not document the codes) |
 
 ## Eco when away
 
@@ -44,6 +44,19 @@ locked, or no keyboard or mouse input, for 10 minutes, or the Mac going to sleep
 (acted on at once). Back means unlocked and used again: the target is restored,
 or the heater switched back on, unless it was changed meanwhile. Only heaters
 that are on are touched; each change is a command, so it beeps.
+
+The same menu can also switch the heater off after a long absence (1, 2 or 4
+hours). It uses the heater's own timer, set in the same command as the lower
+target (one beep), so it works even while the Mac sleeps. On return the timer
+is cancelled, or the heater switched back on with its target restored. A timer
+you set yourself is left alone. The Office (which counts its timer down) also
+offers 30 minutes.
+
+Heaters elsewhere (the Bathroom) get only auto-off in that menu: whenever the
+heater is switched on, here, in Air+ or on the heater, without a timer, its
+timer is set (1, 2 or 4 hours), in the same command when switched on from
+HeaterBar. At launch, if it is on without a timer, setting that timer is also
+what makes it report, one beep instead of the two of the timer on/off check.
 
 `history.json` in the same folder holds one reading per minute, kept a week (room, target, Eco,
 heating, energy) for the graph, which shows one day at a time. `energy.json` keeps each heater's energy per day for good,

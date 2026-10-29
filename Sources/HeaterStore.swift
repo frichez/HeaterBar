@@ -190,6 +190,9 @@ final class HeaterStore: ObservableObject {
     @Published private(set) var ledger = EnergyLedger()
     @Published private(set) var outdoor: OutdoorWeather?
     @Published private(set) var awayActions: [String: AwayAction] = [:]
+    /// Per heater, the timer step that switches it off: after a long absence
+    /// for a heater in the Mac's room, after being on that long for the others.
+    @Published private(set) var awayOffSteps: [String: Int] = [:]
     @Published private(set) var isAway = false
     /// What to put back when someone returns, per heater: the target and its
     /// setback, or that it was switched off. Saved, so a restart while away
@@ -197,6 +200,7 @@ final class HeaterStore: ObservableObject {
     @Published private(set) var awayRestore: [String: [String: Int]] = [:]
     private let presence = PresenceMonitor()
     private static let awayActionsKey = "awayActions"
+    private static let awayOffStepsKey = "awayOffSteps"
     private static let awayRestoreKey = "awayRestore"
 
     private var links: [String: HeaterLink] = [:]
@@ -206,13 +210,14 @@ final class HeaterStore: ObservableObject {
     private var lastPower: [String: (watts: Double, since: Date)] = [:]
     /// The level in each heater's saved status, for billing it after launch.
     private var cachedLevel: [String: Int] = [:]
-    /// Power as the heater last reported it, before any optimistic display.
-    private var reportedPower: [String: Bool] = [:]
-    /// Counts power commands per heater, so a check knows when it is stale.
-    private var powerRequests: [String: Int] = [:]
-    /// The same two for the target.
-    private var reportedTarget: [String: Int] = [:]
-    private var targetRequests: [String: Int] = [:]
+    /// Each heater's last live status as it came, before any optimistic
+    /// display, and when: what commands are checked against.
+    private var reported: [String: (values: [String: Any], at: Date)] = [:]
+    /// The latest command per heater and setting, so a check never undoes a
+    /// later one.
+    private var lastCommand: [String: [String: UUID]] = [:]
+    /// Power in each heater's last live status, to see it being switched on.
+    private var reportedOn: [String: Bool] = [:]
     private var statusLog = StatusLog()
     private var roomReadings: [String: [(time: Date, value: Double)]] = [:]
 
@@ -250,6 +255,8 @@ final class HeaterStore: ObservableObject {
 
         let savedActions = UserDefaults.standard.dictionary(forKey: Self.awayActionsKey) as? [String: String] ?? [:]
         awayActions = savedActions.compactMapValues(AwayAction.init)
+        awayOffSteps = UserDefaults.standard.dictionary(forKey: Self.awayOffStepsKey) as? [String: Int] ?? [:]
+        for (id, link) in links { link.setAutoOff(step: autoOffStep(for: id)) }
         awayRestore = UserDefaults.standard.dictionary(forKey: Self.awayRestoreKey) as? [String: [String: Int]] ?? [:]
         presence.onChange = { [weak self] away in self?.presenceChanged(away) }
         // Heaters still set back from before a restart must come back on return.
@@ -301,24 +308,15 @@ final class HeaterStore: ObservableObject {
         links.values.forEach { $0.refresh() }
     }
 
-    /// A heater has been seen to answer "success" to power on and stay off, so
-    /// five seconds later the reported power is checked and the command sent
-    /// once more if it did not take, unless a newer power command has been
-    /// sent since: the check must never undo a later click.
-    func setPower(_ isOn: Bool, for id: String, reason: String = "you", isRetry: Bool = false) {
-        let request = (powerRequests[id] ?? 0) + 1
-        powerRequests[id] = request
-        send(["D03102": isOn ? 1 : 0], to: id, reason: isRetry ? reason + ", power check" : reason, isOn: isOn) { [weak self] ok in
-            guard ok, !isRetry else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                MainActor.assumeIsolated {
-                    guard let self, self.powerRequests[id] == request,
-                          let reported = self.reportedPower[id], reported != isOn else { return }
-                    storeLog.error("\(id, privacy: .public) still reports power \(reported) after a successful command; sending it again")
-                    self.setPower(isOn, for: id, reason: reason, isRetry: true)
-                }
-            }
+    func setPower(_ isOn: Bool, for id: String, reason: String = "you") {
+        var values: [String: Any] = ["D03102": isOn ? 1 : 0]
+        // Its auto-off timer goes in the same command: one beep.
+        if isOn, let step = autoOffStep(for: id), let index = heaters.firstIndex(where: { $0.id == id }),
+           (heaters[index].timerMinutesLeft ?? 0) == 0 {
+            values["D03110"] = step
+            heaters[index].timerMinutesLeft = Self.minutes(forTimerStep: step)
         }
+        send(values, to: id, reason: reason, isOn: isOn)
     }
 
     func adjustTarget(by step: Int, for id: String) {
@@ -328,24 +326,8 @@ final class HeaterStore: ObservableObject {
         setTarget(next, for: id)
     }
 
-    /// The Office once answered "success" to an Eco restore and kept the old
-    /// target (2026-10-29 11:28), so as with power the reported target is
-    /// checked after 12 seconds (its report came 8 seconds late) and the
-    /// command sent once more if it did not take.
-    func setTarget(_ target: Int, for id: String, reason: String = "you", isRetry: Bool = false) {
-        let request = (targetRequests[id] ?? 0) + 1
-        targetRequests[id] = request
-        send(["D0310E": target], to: id, reason: isRetry ? reason + ", target check" : reason, target: target) { [weak self] ok in
-            guard ok, !isRetry else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
-                MainActor.assumeIsolated {
-                    guard let self, self.targetRequests[id] == request,
-                          let reported = self.reportedTarget[id], reported != target else { return }
-                    storeLog.error("\(id, privacy: .public) still reports target \(reported) after a successful command; sending it again")
-                    self.setTarget(target, for: id, reason: reason, isRetry: true)
-                }
-            }
-        }
+    func setTarget(_ target: Int, for id: String, reason: String = "you") {
+        send(["D0310E": target], to: id, reason: reason, target: target)
     }
 
     func setMode(_ mode: HeaterMode, for id: String) {
@@ -386,6 +368,27 @@ final class HeaterStore: ObservableObject {
         UserDefaults.standard.set(awayActions.mapValues(\.rawValue), forKey: Self.awayActionsKey)
     }
 
+    /// Timer steps offered for switching off; 30 minutes only on models that
+    /// count down (the CX5120 turns step 1 into 2).
+    static func awayOffChoices(for heater: HeaterState) -> [(label: String, step: Int)] {
+        (heater.hasTimerCountdown ? [("30 min", 1)] : []) + [("1 hour", 2), ("2 hours", 3), ("4 hours", 5)]
+    }
+
+    func setAwayOff(step: Int?, for id: String) {
+        awayOffSteps[id] = step
+        UserDefaults.standard.set(awayOffSteps, forKey: Self.awayOffStepsKey)
+        links[id]?.setAutoOff(step: autoOffStep(for: id))
+    }
+
+    /// Auto-off, for a heater outside the Mac's room (the Bathroom): whenever
+    /// it is switched on (here, in Air+ or on the heater) without a timer, its
+    /// timer is set, so it is never forgotten on. A timer cancelled while it
+    /// runs stays cancelled.
+    private func autoOffStep(for id: String) -> Int? {
+        guard let heater = heaters.first(where: { $0.id == id }), !followsPresence(heater) else { return nil }
+        return awayOffSteps[id]
+    }
+
     func isEcoActive(_ id: String) -> Bool { awayRestore[id] != nil }
 
     /// Heaters in the room where this Mac is: presence at the Mac only says
@@ -397,31 +400,51 @@ final class HeaterStore: ObservableObject {
     /// Eco when away: on leaving, each heater that is on and has an action gets
     /// its target lowered or is switched off; on return it is put back, unless
     /// someone changed it meanwhile (in Air+, say), which then wins.
+    /// For a long absence the heater's own timer is set as well, in the same
+    /// command (one beep): it switches the heater off by itself, even with the
+    /// Mac asleep and unable to send anything. A timer already running is left
+    /// alone. On return the timer is cancelled, or the heater switched back on.
     private func presenceChanged(_ away: Bool) {
         isAway = away
         if away {
             for heater in heaters where heater.isOn == true && awayRestore[heater.id] == nil && followsPresence(heater) {
-                switch awayActions[heater.id] ?? .none {
-                case .none:
-                    continue
-                case .switchOff:
+                let action = awayActions[heater.id] ?? .none
+                if action == .switchOff {
                     awayRestore[heater.id] = ["power": 1]
                     setPower(false, for: heater.id, reason: "eco: you left the Mac")
-                case let action:
-                    guard let target = heater.target, let degrees = action.degrees else { continue }
-                    let setback = max(Self.targetRange.lowerBound, target - degrees)
-                    awayRestore[heater.id] = ["target": target, "setback": setback]
-                    setTarget(setback, for: heater.id, reason: "eco: you left the Mac")
+                    continue
                 }
+                var restore: [String: Int] = [:]
+                var values: [String: Any] = [:]
+                if let target = heater.target, let degrees = action.degrees {
+                    let setback = max(Self.targetRange.lowerBound, target - degrees)
+                    restore = ["target": target, "setback": setback]
+                    values["D0310E"] = setback
+                }
+                if let step = awayOffSteps[heater.id], (heater.timerMinutesLeft ?? 0) == 0 {
+                    restore["timer"] = 1
+                    values["D03110"] = step
+                }
+                guard !values.isEmpty else { continue }
+                awayRestore[heater.id] = restore
+                if let step = values["D03110"] as? Int, let index = heaters.firstIndex(where: { $0.id == heater.id }) {
+                    heaters[index].timerMinutesLeft = Self.minutes(forTimerStep: step)
+                }
+                send(values, to: heater.id, reason: "eco: you left the Mac", target: values["D0310E"] as? Int)
             }
         } else {
             for (id, restore) in awayRestore {
                 guard let heater = heaters.first(where: { $0.id == id }) else { continue }
-                if let target = restore["target"], heater.target == restore["setback"] {
-                    setTarget(target, for: id, reason: "eco: you are back")
-                } else if restore["power"] == 1, heater.isOn == false {
-                    setPower(true, for: id, reason: "eco: you are back")
+                var values: [String: Any] = [:]
+                if restore["power"] == 1 || restore["timer"] == 1, heater.isOn == false { values["D03102"] = 1 }
+                if let target = restore["target"], heater.target == restore["setback"] { values["D0310E"] = target }
+                if restore["timer"] == 1, heater.isOn == true, (heater.timerMinutesLeft ?? 0) > 0 {
+                    values["D03110"] = 0
+                    if let index = heaters.firstIndex(where: { $0.id == id }) { heaters[index].timerMinutesLeft = 0 }
                 }
+                guard !values.isEmpty else { continue }
+                send(values, to: id, reason: "eco: you are back",
+                     isOn: values["D03102"] == nil ? nil : true, target: values["D0310E"] as? Int)
             }
             awayRestore = [:]
         }
@@ -453,7 +476,7 @@ final class HeaterStore: ObservableObject {
     }
 
     private func send(_ values: [String: Any], to id: String, reason: String = "you", isOn: Bool? = nil, target: Int? = nil,
-                      mode: HeaterMode? = nil, isOscillating: Bool? = nil,
+                      mode: HeaterMode? = nil, isOscillating: Bool? = nil, isCheck: Bool = false,
                       completion: ((Bool) -> Void)? = nil) {
         guard let index = heaters.firstIndex(where: { $0.id == id }), let link = links[id] else { return }
         let before = heaters[index]
@@ -469,11 +492,15 @@ final class HeaterStore: ObservableObject {
         change.isOscillating = isOscillating ?? change.isOscillating
         change.since = Date()
         pendingChanges[id] = change
+        let command = UUID(), sentAt = Date()
+        for key in values.keys { lastCommand[id, default: [:]][key] = command }
 
         link.send(values, reason: reason) { [weak self] ok in
             MainActor.assumeIsolated {
                 completion?(ok)
-                guard let self, !ok, let index = self.heaters.firstIndex(where: { $0.id == id }) else { return }
+                guard let self else { return }
+                if ok, !isCheck { self.check(values, command: command, sentAt: sentAt, id: id, reason: reason) }
+                guard !ok, let index = self.heaters.firstIndex(where: { $0.id == id }) else { return }
                 self.pendingChanges[id] = nil
                 if isOn != nil { self.heaters[index].isOn = before.isOn }
                 if target != nil { self.heaters[index].target = before.target }
@@ -482,6 +509,64 @@ final class HeaterStore: ObservableObject {
                 self.heaters[index].problem = "Didn't respond, try again"
             }
         }
+    }
+
+    /// An accepted command is not always applied: the Office once answered
+    /// "success" to a target and kept the old one (2026-10-29 11:28). So 12
+    /// seconds on (that report came 8 seconds late) what the heater reports is
+    /// compared with what was sent, whatever the setting:
+    /// - a report since the command that contradicts it: sent once more;
+    /// - no report: a heater that answers asks (the CX3120) is asked, silently,
+    ///   and checked again; one that reports only real changes (the CX5120) is
+    ///   left alone, as a lost report proves nothing there and a re-send beeps.
+    /// A newer command for the same setting cancels the check.
+    private func check(_ values: [String: Any], command: UUID, sentAt: Date, id: String, reason: String,
+                       asked: Bool = false) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + (asked ? 5 : 12)) {
+            MainActor.assumeIsolated { [weak self] in
+                guard let self, let heater = self.heaters.first(where: { $0.id == id }) else { return }
+                let current = values.filter { self.lastCommand[id]?[$0.key] == command }
+                guard !current.isEmpty else { return }
+                guard let report = self.reported[id], report.at > sentAt else {
+                    if !asked, !Self.reportsOnlyChanges(heater) {
+                        self.links[id]?.refresh()
+                        self.check(values, command: command, sentAt: sentAt, id: id, reason: reason, asked: true)
+                    } else {
+                        self.statusLog.recordEvent("check: no report since \(Self.describe(current)) (\(reason)); not sent again",
+                                                   heater: heater.name)
+                    }
+                    return
+                }
+                let missed = current.filter { !Self.matches($0.value, report.values[$0.key], key: $0.key) }
+                guard !missed.isEmpty else { return }
+                storeLog.error("\(id, privacy: .public) accepted \(Self.describe(missed), privacy: .public) but did not apply it; sending it again")
+                let code = missed["D0310C"] as? Int
+                self.send(missed, to: id, reason: reason + ", check",
+                          isOn: (missed["D03102"] as? Int).map { $0 != 0 },
+                          target: missed["D0310E"] as? Int,
+                          mode: code.flatMap { HeaterMode(code: $0, learns: heater.autoLearns) },
+                          isOscillating: (missed["D0320F"] as? Int).map { $0 != 0 },
+                          isCheck: true)
+            }
+        }
+    }
+
+    /// The CX5120 answers no ask and reports only real changes.
+    private static func reportsOnlyChanges(_ heater: HeaterState) -> Bool { heater.model.hasPrefix("CX5120") }
+
+    /// Whether a reported value shows a command took. Oscillation and timer
+    /// only as on or off: the CX5120 reports oscillation 17222 as 17920 and
+    /// timer step 1 as 2. A setting missing from the report proves nothing.
+    private static func matches(_ sent: Any, _ reported: Any?, key: String) -> Bool {
+        guard let sent = sent as? Int, let reported = reported as? Int else { return true }
+        switch key {
+        case "D0320F", "D03110": return (sent != 0) == (reported != 0)
+        default: return sent == reported
+        }
+    }
+
+    private static func describe(_ values: [String: Any]) -> String {
+        values.keys.sorted().map { "\($0)=\(values[$0]!)" }.joined(separator: " ")
     }
 
     private func connect(_ heater: HeaterState) {
@@ -500,6 +585,7 @@ final class HeaterStore: ObservableObject {
             MainActor.assumeIsolated { self?.reachabilityChanged(reachable, for: id) }
         }
         links[id] = link
+        link.setAutoOff(step: autoOffStep(for: id))
         // A running timer's step is known only where minutes map back to one
         // (the CX5120 reports no countdown, just the step).
         let minutes = heater.timerMinutesLeft ?? 0
@@ -554,16 +640,15 @@ final class HeaterStore: ObservableObject {
         guard let index = heaters.firstIndex(where: { $0.id == id }) else { return }
         heaters[index].lastSeen = cachedTime ?? Date()
         heaters[index].isStale = cachedTime != nil
+        if cachedTime == nil { reported[id] = (status, Date()) }
         let pending = pendingChanges[id].flatMap { Date().timeIntervalSince($0.since) < 8 ? $0 : nil }
         if pending == nil { pendingChanges[id] = nil }
 
         if let power = status["D03102"] as? Int {
             let isOn = power != 0
-            if cachedTime == nil { reportedPower[id] = isOn }
             if pending?.isOn == nil || pending?.isOn == isOn { heaters[index].isOn = isOn }
         }
         if let target = status["D0310E"] as? Int {
-            if cachedTime == nil { reportedTarget[id] = target }
             if pending?.target == nil || pending?.target == target { heaters[index].target = target }
         }
         if let angle = status["D0320F"] as? Int {
@@ -617,6 +702,14 @@ final class HeaterStore: ObservableObject {
         statusLog.record(status, heater: heaters[index].name, room: heaters[index].roomTemperature, watts: watts,
                          outdoor: outdoor?.temperature, away: isAway, at: now)
         accrue(id, newWatts: watts, at: now)
+        if cachedTime == nil, let power = status["D03102"] as? Int {
+            let wasOn = reportedOn[id]
+            reportedOn[id] = power != 0
+            if power != 0, wasOn != true, (status["D03110"] as? Int ?? 0) == 0, let step = autoOffStep(for: id) {
+                heaters[index].timerMinutesLeft = Self.minutes(forTimerStep: step)
+                send(["D03110": step], to: id, reason: "auto-off: switched on")
+            }
+        }
     }
 
     /// Bills the power drawn since the last call and records the minute in the

@@ -53,6 +53,9 @@ final class HeaterLink: @unchecked Sendable {
     /// A wiggle's way back that failed, sent again after each sync until the
     /// heater takes it, so no timer is left set.
     private var pendingRestore: [String: Int]?
+    /// The timer step a heater gets whenever it is on without one (see
+    /// HeaterStore.autoOffStep), nil when it has no such setting.
+    private var autoOffStep: Int?
     /// Whether the heater's current state is still unknown, at launch.
     /// Cleared by its first status.
     private var needsReport = true
@@ -102,6 +105,8 @@ final class HeaterLink: @unchecked Sendable {
             if self.lastPowerOn == nil { self.lastPowerOn = isOn }
         }
     }
+
+    func setAutoOff(step: Int?) { queue.async { self.autoOffStep = step } }
 
     /// Sets values in the heater's desired state, e.g. `["D03102": 1]`.
     func send(_ values: [String: Any], reason: String, completion: @escaping (Bool) -> Void) {
@@ -327,6 +332,16 @@ final class HeaterLink: @unchecked Sendable {
         // CX5120 on while it was off. A running timer is cancelled and set
         // again, which restarts its countdown. A heater that is off ends with
         // no timer, which has no use there.
+        // On without a timer, a heater set to switch itself off gets that
+        // timer now: a real change, so it reports, with one beep instead of two.
+        if lastPowerOn == true, lastTimerStep == 0, let step = autoOffStep {
+            lastWiggle = Date()
+            log.info("\(self.host, privacy: .public) setting its auto-off timer step \(step) instead of wiggling")
+            control(["D03110": step], reason: "auto-off timer (also asks the heater to report)") { [weak self] ok in
+                if ok { self?.lastTimerStep = step }
+            }
+            return
+        }
         let change: (key: String, temporary: Int, real: Int)
         if lastPowerOn == false {
             change = ("D03110", 1, 0)
