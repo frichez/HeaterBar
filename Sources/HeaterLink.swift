@@ -43,13 +43,18 @@ final class HeaterLink: @unchecked Sendable {
     /// When to ask a quiet heater again, and how long the wait after that is.
     private var nextAsk = Date.distantPast
     private var askInterval: TimeInterval = 5
-    /// Settings last reported, for wiggling; see `wiggle()`.
-    private var lastTarget: Int?
+    /// The timer step last reported, for wiggling; see `wiggle()`. Nil while
+    /// a timer runs whose step is unknown, which rules wiggling out.
     private var lastTimerStep: Int?
+    /// Whether the heater was last known to be on.
+    private var lastPowerOn: Bool?
     private var lastWiggle = Date.distantPast
     private var wiggling: (key: String, temporary: Int, real: Int)?
-    /// Whether the heater's current state is still unknown: at launch, and
-    /// after it was gone. Cleared by its first status.
+    /// A wiggle's way back that failed, sent again after each sync until the
+    /// heater takes it, so no timer is left set.
+    private var pendingRestore: [String: Int]?
+    /// Whether the heater's current state is still unknown, at launch.
+    /// Cleared by its first status.
     private var needsReport = true
     /// Pings sent since the heater last answered anything. A quiet heater is
     /// normal (some only report changes), so silence alone proves nothing.
@@ -89,12 +94,12 @@ final class HeaterLink: @unchecked Sendable {
         queue.async { self.counter == nil ? self.sync() : self.observe() }
     }
 
-    /// Settings remembered from the last session, until the heater reports.
-    func seed(target: Int?, timerMinutesLeft: Int?) {
+    /// The timer step remembered from the last session, until the heater
+    /// reports: 0 when none ran, nil when one ran whose step is unknown.
+    func seed(timerStep: Int?, isOn: Bool?) {
         queue.async {
-            if self.lastTarget == nil { self.lastTarget = target }
-            // Only "no timer" matters here: any running one rules the timer out.
-            if self.lastTimerStep == nil, let minutes = timerMinutesLeft { self.lastTimerStep = minutes > 0 ? 1 : 0 }
+            if self.lastTimerStep == nil { self.lastTimerStep = timerStep }
+            if self.lastPowerOn == nil { self.lastPowerOn = isOn }
         }
     }
 
@@ -104,8 +109,8 @@ final class HeaterLink: @unchecked Sendable {
             self.control(values, reason: reason) { ok in
                 if ok {
                     // A wiggle before the heater reports must restore these.
-                    self.lastTarget = values["D0310E"] as? Int ?? self.lastTarget
                     self.lastTimerStep = values["D03110"] as? Int ?? self.lastTimerStep
+                    if let power = values["D03102"] as? Int { self.lastPowerOn = power == 1 }
                 }
                 DispatchQueue.main.async { completion(ok) }
             }
@@ -211,8 +216,8 @@ final class HeaterLink: @unchecked Sendable {
         DispatchQueue.main.async { self.onReachable?(true) }
         guard wasGone else { return }
         log.info("\(self.host, privacy: .public) reachable again")
-        // Its state is unknown now, so a silent one gets the startup wiggle.
-        needsReport = true
+        // No wiggle (and no beeps) here: a Wi-Fi drop changes no setting, and
+        // after a power cut the CX5120 reports by itself once it is back.
         connect()
     }
 
@@ -270,8 +275,8 @@ final class HeaterLink: @unchecked Sendable {
                 status[wiggle.key] = wiggle.real  // not worth showing
                 status.removeValue(forKey: "D03211")  // nor the countdown it starts
             } else {
-                lastTarget = status["D0310E"] as? Int ?? lastTarget
                 lastTimerStep = status["D03110"] as? Int ?? lastTimerStep
+                if let power = status["D03102"] as? Int { lastPowerOn = power == 1 }
             }
             lastStatus = Date()
             needsReport = false
@@ -294,8 +299,13 @@ final class HeaterLink: @unchecked Sendable {
     private func subscribe() {
         nextAsk = Date().addingTimeInterval(askInterval)
         observe()
-        // A heater that stays silent at launch, or back after being gone, gets
-        // one wiggle so its real state is known (it beeps; the user accepts it).
+        if let restore = pendingRestore {
+            control(restore, reason: "wiggle (back, once the heater answered again)", retry: false) { [weak self] ok in
+                if ok { self?.pendingRestore = nil }
+            }
+        }
+        // A heater that stays silent at launch gets one wiggle so its real
+        // state is known (it beeps; the user accepts it).
         let synced = lastSync
         queue.asyncAfter(deadline: .now() + 15) { [weak self] in
             guard let self, self.lastSync == synced, self.lastStatus == nil, self.needsReport else { return }
@@ -310,15 +320,18 @@ final class HeaterLink: @unchecked Sendable {
     /// beeps (and is likely stored by the heater), so this happens at most every
     /// five minutes, and only at launch or when the heater is back. The timer
     /// is the safe setting: should the way back fail, the heater only switches
-    /// itself off in 30 minutes. With a timer already running, the target moves
-    /// a degree instead.
+    /// itself off in 30 minutes.
     private func wiggle() {
         guard Date().timeIntervalSince(lastWiggle) > 300 else { return }
+        // Never the target: on 2026-10-29 a target change switched the
+        // CX5120 on while it was off. A running timer is cancelled and set
+        // again, which restarts its countdown. A heater that is off ends with
+        // no timer, which has no use there.
         let change: (key: String, temporary: Int, real: Int)
-        if (lastTimerStep ?? 0) == 0 {
+        if lastPowerOn == false {
             change = ("D03110", 1, 0)
-        } else if let target = lastTarget {
-            change = ("D0310E", target >= 37 ? target - 1 : target + 1, target)
+        } else if let step = lastTimerStep {
+            change = ("D03110", step == 0 ? 1 : 0, step)
         } else {
             return
         }
@@ -327,13 +340,13 @@ final class HeaterLink: @unchecked Sendable {
         log.info("\(self.host, privacy: .public) wiggling \(change.key, privacy: .public) \(change.real) → \(change.temporary) → \(change.real)")
         control([change.key: change.temporary], reason: "wiggle (asks the heater to report)") { [weak self] ok in
             guard let self else { return }
-            guard ok else {
-                self.wiggling = nil
-                return
-            }
+            // Sent even when the first got no reply: the heater may have
+            // applied it anyway (it did on 2026-10-29, leaving a timer set).
+            if !ok { log.error("\(self.host, privacy: .public) wiggle got no confirmation; restoring anyway") }
             self.control([change.key: change.real], reason: "wiggle (back)") { [weak self] ok in
                 if !ok {
-                    log.error("\(self?.host ?? "", privacy: .public) could not restore \(change.key, privacy: .public) to \(change.real)")
+                    log.error("\(self?.host ?? "", privacy: .public) could not restore \(change.key, privacy: .public) to \(change.real); will retry")
+                    self?.pendingRestore = [change.key: change.real]
                 }
                 self?.queue.asyncAfter(deadline: .now() + 2) { self?.wiggling = nil }
             }
@@ -423,6 +436,7 @@ final class HeaterLink: @unchecked Sendable {
         guard let json = PhilipsCrypto.decrypt(payload),
               let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
               let state = object["state"] as? [String: Any] else { return nil }
+        log.debug("status json: \(json, privacy: .public)")
         return state["reported"] as? [String: Any]
     }
 }

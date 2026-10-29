@@ -272,7 +272,10 @@ struct HeaterCard: View {
                 .help(heater.model)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(heater.name).font(.system(.body, weight: .semibold))
+                    HStack(spacing: 5) {
+                        Text(heater.name).font(.system(.body, weight: .semibold))
+                        signalIcon
+                    }
                     HStack(spacing: 4) {
                         if heater.isOn == nil, heater.problem == nil {
                             ProgressView().controlSize(.mini)
@@ -312,14 +315,17 @@ struct HeaterCard: View {
                         stepButton("plus", step: 1, limit: HeaterStore.targetRange.upperBound)
                     }
                     Text("Target").font(.caption2).foregroundStyle(.secondary)
-                        .help("The temperature Auto+ keeps. High, Medium and Low heat continuously instead.")
+                        .help("The temperature Auto and Auto+ keep. High, Medium and Low heat continuously instead.")
                 }
                 .opacity(isOn ? 1 : 0.6)
             }
 
             HStack(spacing: 4) {
-                // The CX5120 has two heat levels, no Medium.
-                ForEach(HeaterMode.allCases.filter { $0 != .medium || !heater.model.hasPrefix("CX5120") }, id: \.self) { mode in
+                // The CX5120 has two heat levels, no Medium. Auto or Auto+, as set in Air+.
+                ForEach(HeaterMode.allCases.filter { mode in
+                    (mode != .medium || !heater.model.hasPrefix("CX5120"))
+                        && (!mode.isAutomatic || mode == (heater.autoLearns ? .autoPlus : .auto))
+                }, id: \.self) { mode in
                     modeButton(mode)
                 }
             }
@@ -372,6 +378,24 @@ struct HeaterCard: View {
         }
     }
 
+    /// Wi-Fi bars from the heater's own signal reading, as in the Air+ app.
+    @ViewBuilder private var signalIcon: some View {
+        if heater.problem != nil {
+            Image(systemName: "wifi.slash")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .help("No answer on the local network")
+        } else if let dBm = heater.signal {
+            // Bars as Wi-Fi tools usually draw them: −55 dBm or better is full.
+            let bars: Double = dBm >= -55 ? 1 : dBm >= -67 ? 0.66 : dBm >= -75 ? 0.33 : 0
+            let quality = dBm >= -55 ? "excellent" : dBm >= -67 ? "good" : dBm >= -75 ? "fair" : "weak"
+            Image(systemName: "wifi", variableValue: bars)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(bars == 0 ? Color.red : Color.secondary)
+                .help("Wi-Fi signal \(dBm) dBm (\(quality))")
+        }
+    }
+
     private var subtitle: String {
         if let problem = heater.problem { return problem }
         if heater.faultCode != 0 { return "Fault code \(heater.faultCode)" }
@@ -386,8 +410,8 @@ struct HeaterCard: View {
         let state: String
         switch activity {
         case .heating:
-            if heater.mode == .auto, let level = heater.runningMode, level != .auto {
-                state = "Heating (Auto+ · \(level.label))"
+            if let auto = heater.mode, auto.isAutomatic, let level = heater.runningMode, !level.isAutomatic {
+                state = "Heating (\(auto.label) · \(level.label))"
             } else {
                 state = "Heating" + mode
             }
@@ -489,8 +513,8 @@ struct HeaterCard: View {
 
     private func modeButton(_ mode: HeaterMode) -> some View {
         let isSelected = heater.mode == mode
-        // The level Auto+ has chosen for itself, outlined beside the filled Auto+.
-        let isAutoLevel = heater.mode == .auto && isOn && heater.runningMode == mode && mode != .auto
+        // The level Auto or Auto+ has chosen for itself, outlined beside the filled mode.
+        let isAutoLevel = heater.mode?.isAutomatic == true && isOn && heater.runningMode == mode && !mode.isAutomatic
         let tint: Color = mode == .ventilation ? .blue : .orange
         return Button {
             store.setMode(mode, for: heater.id)
@@ -514,7 +538,7 @@ struct HeaterCard: View {
         }
         .buttonStyle(.plain)
         .disabled(heater.mode == nil)
-        .help(isAutoLevel ? "The level Auto+ is using now. \(mode.explanation)" : mode.explanation)
+        .help(isAutoLevel ? "The level \(heater.mode?.label ?? "Auto") is using now. \(mode.explanation)" : mode.explanation)
         .animation(.easeOut(duration: 0.2), value: isAutoLevel)
     }
 

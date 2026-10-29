@@ -2,8 +2,8 @@ import Charts
 import SwiftUI
 
 /// Room temperature over one day, midnight to midnight (to now for today),
-/// with the target as a dashed step line and the minutes the heater was
-/// heating shaded behind. `DayPicker` chooses the day.
+/// with the target as a dashed step line, and shaded behind it the minutes
+/// the heater was heating (orange) or held back by Eco when away (green). `DayPicker` chooses the day.
 struct TemperatureChart: View {
     let samples: [TemperatureSample]
     /// 0 for today, 1 for yesterday, and so on.
@@ -37,7 +37,7 @@ struct TemperatureChart: View {
             } else {
                 chart
                 HStack(spacing: 12) {
-                    legendItem("Room temperature") {
+                    legendItem("Temperature") {
                         Capsule().fill(Color.primary.opacity(0.85)).frame(width: 12, height: 2)
                     }
                     legendItem("Target") {
@@ -48,6 +48,11 @@ struct TemperatureChart: View {
                     legendItem("Heating") {
                         RoundedRectangle(cornerRadius: 2).fill(Color.orange.opacity(0.3)).frame(width: 10, height: 8)
                     }
+                    if !ecoSpans.isEmpty {
+                        legendItem("Eco") {
+                            RoundedRectangle(cornerRadius: 2).fill(Color.green.opacity(0.3)).frame(width: 10, height: 8)
+                        }
+                    }
                 }
             }
         }
@@ -55,6 +60,10 @@ struct TemperatureChart: View {
 
     private var chart: some View {
         Chart {
+            ForEach(ecoSpans, id: \.lowerBound) { span in
+                RectangleMark(xStart: .value("From", span.lowerBound), xEnd: .value("To", span.upperBound))
+                    .foregroundStyle(Color.green.opacity(0.15))
+            }
             ForEach(heatingSpans, id: \.lowerBound) { span in
                 RectangleMark(xStart: .value("From", span.lowerBound), xEnd: .value("To", span.upperBound))
                     .foregroundStyle(Color.orange.opacity(0.15))
@@ -122,6 +131,9 @@ struct TemperatureChart: View {
             if sample.isHeating {
                 Text("Heating").font(.caption2).foregroundStyle(.secondary)
             }
+            if sample.isEco == true {
+                Text("Eco").font(.caption2).foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
@@ -133,10 +145,13 @@ struct TemperatureChart: View {
         return visible.min { abs($0.time.timeIntervalSince(selection)) < abs($1.time.timeIntervalSince(selection)) }
     }
 
-    /// Runs of consecutive heating minutes, each covering its whole last minute.
-    private var heatingSpans: [ClosedRange<Date>] {
+    private var heatingSpans: [ClosedRange<Date>] { spans { $0.isHeating } }
+    private var ecoSpans: [ClosedRange<Date>] { spans { $0.isEco == true } }
+
+    /// Runs of consecutive matching minutes, each covering its whole last minute.
+    private func spans(where matches: (TemperatureSample) -> Bool) -> [ClosedRange<Date>] {
         var spans: [ClosedRange<Date>] = []
-        for sample in visible where sample.isHeating {
+        for sample in visible where matches(sample) {
             let end = sample.time.addingTimeInterval(60)
             if let open = spans.last, sample.time <= open.upperBound {
                 spans[spans.count - 1] = open.lowerBound...end

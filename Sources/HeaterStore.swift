@@ -3,17 +3,42 @@ import os
 
 private let storeLog = Logger(subsystem: "local.heaterbar", category: "store")
 
-/// D0310C, the mode chosen in Air+. Each heating mode also sets D0310A to 3
-/// (heater); ventilation sets it to 1 (fan only).
-enum HeaterMode: Int, CaseIterable {
-    case auto = 0
-    case high = 65
-    case medium = 67
-    case low = 66
-    case ventilation = -127
+/// The mode chosen in Air+: D0310C, plus D03180 telling Auto+ (1, with
+/// Philips' learning) from plain Auto (0), which share D0310C 0 (seen
+/// 2026-10-29). HeaterBar shows whichever the heater is set to and leaves
+/// D03180 to Air+. Each heating mode also sets D0310A to 3 (heater); ventilation
+/// sets it to 1 (fan only).
+enum HeaterMode: CaseIterable {
+    case autoPlus, auto, high, medium, low, ventilation
+
+    /// D0310C, also used for D0313F, the level actually running.
+    var code: Int {
+        switch self {
+        case .autoPlus, .auto: return 0
+        case .high: return 65
+        case .medium: return 67
+        case .low: return 66
+        case .ventilation: return -127
+        }
+    }
+
+    init?(code: Int, learns: Bool = true) {
+        switch code {
+        case 0: self = learns ? .autoPlus : .auto
+        case 65: self = .high
+        case 67: self = .medium
+        case 66: self = .low
+        case -127: self = .ventilation
+        default: return nil
+        }
+    }
+
+    /// Auto or Auto+: the heater picks the level itself to keep the target.
+    var isAutomatic: Bool { self == .autoPlus || self == .auto }
 
     var symbol: String {
         switch self {
+        case .autoPlus: return "a.circle.fill"
         case .auto: return "a.circle"
         case .high: return "thermometer.high"
         case .medium: return "thermometer.medium"
@@ -26,6 +51,9 @@ enum HeaterMode: Int, CaseIterable {
     var explanation: String {
         switch self {
         case .auto:
+            return "Auto: keeps the target temperature by choosing the heating level itself and "
+                + "switching on and off as needed, without the learning of Auto+."
+        case .autoPlus:
             return "Auto+ (Philips Eco AI): keeps the target temperature by choosing the heating level itself and "
                 + "switching on and off as needed. It learns your usage patterns and follows the weather to save energy."
         case .high:
@@ -41,7 +69,8 @@ enum HeaterMode: Int, CaseIterable {
 
     var label: String {
         switch self {
-        case .auto: return "Auto+"
+        case .autoPlus: return "Auto+"
+        case .auto: return "Auto"
         case .high: return "High"
         case .medium: return "Medium"
         case .low: return "Low"
@@ -81,6 +110,8 @@ struct HeaterState: Identifiable, Codable {
     var target: Int?
     var roomTemperature: Double?
     var mode: HeaterMode?
+    /// D03180, set in Air+: whether the heater's automatic mode is Auto+ or Auto.
+    var autoLearns = true
     /// Actually producing heat, as opposed to on but idle at its target.
     var isHeating = false
     /// D0313F while heating: the level actually used, which Auto+ chooses itself.
@@ -101,6 +132,8 @@ struct HeaterState: Identifiable, Codable {
     var problem: String?
     /// D03240: 0 when all is well. Philips does not document the codes.
     var faultCode = 0
+    /// Wi-Fi signal in dBm, from the status's "rssi" (the Air+ app's signal).
+    var signal: Int?
 
     /// Only where to find the heater is remembered; its state is always live.
     private enum CodingKeys: String, CodingKey { case id, host, name, model }
@@ -177,6 +210,9 @@ final class HeaterStore: ObservableObject {
     private var reportedPower: [String: Bool] = [:]
     /// Counts power commands per heater, so a check knows when it is stale.
     private var powerRequests: [String: Int] = [:]
+    /// The same two for the target.
+    private var reportedTarget: [String: Int] = [:]
+    private var targetRequests: [String: Int] = [:]
     private var statusLog = StatusLog()
     private var roomReadings: [String: [(time: Date, value: Double)]] = [:]
 
@@ -289,13 +325,33 @@ final class HeaterStore: ObservableObject {
         guard let current = heaters.first(where: { $0.id == id })?.target else { return }
         let next = min(max(current + step, Self.targetRange.lowerBound), Self.targetRange.upperBound)
         guard next != current else { return }
-        send(["D0310E": next], to: id, target: next)
+        setTarget(next, for: id)
+    }
+
+    /// The Office once answered "success" to an Eco restore and kept the old
+    /// target (2026-10-29 11:28), so as with power the reported target is
+    /// checked after 12 seconds (its report came 8 seconds late) and the
+    /// command sent once more if it did not take.
+    func setTarget(_ target: Int, for id: String, reason: String = "you", isRetry: Bool = false) {
+        let request = (targetRequests[id] ?? 0) + 1
+        targetRequests[id] = request
+        send(["D0310E": target], to: id, reason: isRetry ? reason + ", target check" : reason, target: target) { [weak self] ok in
+            guard ok, !isRetry else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+                MainActor.assumeIsolated {
+                    guard let self, self.targetRequests[id] == request,
+                          let reported = self.reportedTarget[id], reported != target else { return }
+                    storeLog.error("\(id, privacy: .public) still reports target \(reported) after a successful command; sending it again")
+                    self.setTarget(target, for: id, reason: reason, isRetry: true)
+                }
+            }
+        }
     }
 
     func setMode(_ mode: HeaterMode, for id: String) {
         guard let heater = heaters.first(where: { $0.id == id }), heater.mode != mode else { return }
         let leavingFan = heater.mode == .ventilation && mode != .ventilation && heater.isOn == true
-        send(["D0310A": mode == .ventilation ? 1 : 3, "D0310C": mode.rawValue], to: id, mode: mode) { [weak self] ok in
+        send(["D0310A": mode == .ventilation ? 1 : 3, "D0310C": mode.code], to: id, mode: mode) { [weak self] ok in
             if ok, leavingFan { self?.rearmHeating(id) }
         }
     }
@@ -355,14 +411,14 @@ final class HeaterStore: ObservableObject {
                     guard let target = heater.target, let degrees = action.degrees else { continue }
                     let setback = max(Self.targetRange.lowerBound, target - degrees)
                     awayRestore[heater.id] = ["target": target, "setback": setback]
-                    send(["D0310E": setback], to: heater.id, reason: "eco: you left the Mac", target: setback)
+                    setTarget(setback, for: heater.id, reason: "eco: you left the Mac")
                 }
             }
         } else {
             for (id, restore) in awayRestore {
                 guard let heater = heaters.first(where: { $0.id == id }) else { continue }
                 if let target = restore["target"], heater.target == restore["setback"] {
-                    send(["D0310E": target], to: id, reason: "eco: you are back", target: target)
+                    setTarget(target, for: id, reason: "eco: you are back")
                 } else if restore["power"] == 1, heater.isOn == false {
                     setPower(true, for: id, reason: "eco: you are back")
                 }
@@ -444,7 +500,12 @@ final class HeaterStore: ObservableObject {
             MainActor.assumeIsolated { self?.reachabilityChanged(reachable, for: id) }
         }
         links[id] = link
-        link.seed(target: heater.target, timerMinutesLeft: heater.timerMinutesLeft)
+        // A running timer's step is known only where minutes map back to one
+        // (the CX5120 reports no countdown, just the step).
+        let minutes = heater.timerMinutesLeft ?? 0
+        link.seed(timerStep: minutes == 0 ? 0
+                  : (1...13).first { Self.minutes(forTimerStep: $0) == minutes },
+                  isOn: heater.isOn)
         link.start()
     }
 
@@ -455,19 +516,24 @@ final class HeaterStore: ObservableObject {
         guard let index = heaters.firstIndex(where: { $0.id == id }) else { return }
         let now = Date()
         if reachable {
-            guard heaters[index].problem == Self.unreachableProblem else {
-                // First answer after launch. A heater that reports only changes
-                // may say nothing for hours, so a recent saved state is taken
-                // as current and billed; a restart rarely misses a change.
-                if heaters[index].isStale, let seen = heaters[index].lastSeen, now.timeIntervalSince(seen) < 600 {
-                    heaters[index].isStale = false
-                    heaters[index].watts = Self.watts(for: heaters[index], level: cachedLevel[id])
-                    lastPower[id] = (heaters[index].watts, now)
+            if heaters[index].problem == Self.unreachableProblem {
+                // Back after being gone: shown as it last reported, as at
+                // launch, since a silent heater may not report for hours.
+                heaters[index].problem = nil
+                let cached = UserDefaults.standard.dictionary(forKey: Self.lastStatusKey) ?? [:]
+                if let entry = cached[id] as? [String: Any], let status = entry["status"] as? [String: Any],
+                   let seen = entry["seen"] as? Date {
+                    apply(status, to: id, seenAt: seen)
                 }
-                return
             }
-            heaters[index].isStale = true
-            heaters[index].problem = nil
+            // A heater that reports only changes may say nothing for hours, so
+            // a recent saved state is taken as current and billed; a restart
+            // or a Wi-Fi drop rarely misses a change.
+            if heaters[index].isStale, let seen = heaters[index].lastSeen, now.timeIntervalSince(seen) < 600 {
+                heaters[index].isStale = false
+                heaters[index].watts = Self.watts(for: heaters[index], level: cachedLevel[id])
+                lastPower[id] = (heaters[index].watts, now)
+            }
         } else {
             accrue(id, newWatts: 0, at: now)
             heaters[index].watts = 0
@@ -497,6 +563,7 @@ final class HeaterStore: ObservableObject {
             if pending?.isOn == nil || pending?.isOn == isOn { heaters[index].isOn = isOn }
         }
         if let target = status["D0310E"] as? Int {
+            if cachedTime == nil { reportedTarget[id] = target }
             if pending?.target == nil || pending?.target == target { heaters[index].target = target }
         }
         if let angle = status["D0320F"] as? Int {
@@ -518,20 +585,22 @@ final class HeaterStore: ObservableObject {
                 ? smoothedRoom(reading, for: id, shown: heaters[index].roomTemperature)
                 : reading
         }
+        if let learns = status["D03180"] as? Int { heaters[index].autoLearns = learns != 0 }
         if let raw = status["D0310C"] as? Int {
-            let mode = HeaterMode(rawValue: raw)
+            let mode = HeaterMode(code: raw, learns: heaters[index].autoLearns)
             if pending?.mode == nil || pending?.mode == mode { heaters[index].mode = mode }
         }
         if let function = status["D0310A"] as? Int, let level = status["D0310D"] as? Int {
             let running = status["D0313F"] as? Int
             heaters[index].isHeating = function == 3 && (1...3).contains(level)
                 && running.map(Self.heatingRunModes.contains) ?? true
-            heaters[index].runningMode = heaters[index].isHeating ? running.flatMap(HeaterMode.init) : nil
+            heaters[index].runningMode = heaters[index].isHeating ? running.flatMap { HeaterMode(code: $0) } : nil
         }
         if let name = status["D01S03"] as? String, !name.isEmpty { heaters[index].name = name }
         heaters[index].problem = nil
         let previousFault = heaters[index].faultCode
         if let fault = status["D03240"] as? Int { heaters[index].faultCode = fault }
+        if let rssi = status["rssi"] as? Int { heaters[index].signal = rssi }
 
         guard cachedTime == nil else {
             cachedLevel[id] = status["D0310D"] as? Int
@@ -564,7 +633,8 @@ final class HeaterStore: ObservableObject {
         ledger.add(energyWh, for: id, at: now)
         if let room = heater.roomTemperature,
            history.record(room: room, target: heater.target, isHeating: heater.isOn == true && heater.isHeating,
-                          energyWh: energyWh, outdoor: outdoor?.temperature, for: id, at: now) {
+                          isEco: awayRestore[id] != nil, energyWh: energyWh, outdoor: outdoor?.temperature,
+                          for: id, at: now) {
             history.save()
             ledger.save()
         }

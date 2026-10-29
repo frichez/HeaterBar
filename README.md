@@ -23,7 +23,7 @@ line each time a heater's state changes (room-only changes are not logged).
 | Column | Code | Values |
 |---|---|---|
 | power | D03102 | 1 on, 0 off |
-| selected_mode | D0310C | 0 Auto+, 65 High, 67 Medium, 66 Low, −127 Fan (−16 when off) |
+| selected_mode | D0310C | 0 Auto+ or Auto (told apart by D03180, set in Air+: 1 Auto+, 0 Auto; the card shows whichever is set), 65 High, 67 Medium, 66 Low, −127 Fan (−16 when off) |
 | running_mode | D0313F | what actually runs: 65/66/67 heating, −16 Auto+ idle, 0 fan |
 | level | D0310D | 1–3 heating power, 4 fan, 0 idle (always 1 on the CX5120: its running mode tells High from Low) |
 | function | D0310A | 3 heater, 1 fan only |
@@ -45,7 +45,7 @@ locked, or no keyboard or mouse input, for 10 minutes, or the Mac going to sleep
 or the heater switched back on, unless it was changed meanwhile. Only heaters
 that are on are touched; each change is a command, so it beeps.
 
-`history.json` in the same folder holds one reading per minute, kept a week (room, target,
+`history.json` in the same folder holds one reading per minute, kept a week (room, target, Eco,
 heating, energy) for the graph, which shows one day at a time. `energy.json` keeps each heater's energy per day for good,
 for the total (click the energy line on a card to switch between today and the total) and for the day shown on the back. `logs/2026-10-28-office-raw-status.log` in this
 project is the raw capture from the day the codes were mapped.

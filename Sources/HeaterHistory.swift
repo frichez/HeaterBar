@@ -9,6 +9,9 @@ struct TemperatureSample: Codable, Identifiable {
     var energyWh: Double?
     /// Outdoor temperature at the time, for analysis (absent in older files).
     var outdoor: Double?
+    /// Whether Eco when away had lowered the target or switched the heater
+    /// off (absent in older files).
+    var isEco: Bool?
 
     var id: Date { time }
 }
@@ -37,8 +40,8 @@ struct HeaterHistory {
 
     /// Folds a reading into the current minute's sample. Returns true when it
     /// opened a new minute, which is when the history is worth saving.
-    mutating func record(room: Double, target: Int?, isHeating: Bool, energyWh: Double, outdoor: Double?,
-                         for id: String, at now: Date = Date()) -> Bool {
+    mutating func record(room: Double, target: Int?, isHeating: Bool, isEco: Bool, energyWh: Double,
+                         outdoor: Double?, for id: String, at now: Date = Date()) -> Bool {
         let minute = Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 60).rounded(.down) * 60)
         var list = samples[id] ?? []
         let opened: Bool
@@ -47,11 +50,12 @@ struct HeaterHistory {
             list[list.count - 1] = TemperatureSample(time: minute, room: room, target: target,
                                                      isHeating: last.isHeating || isHeating,
                                                      energyWh: (last.energyWh ?? 0) + energyWh,
-                                                     outdoor: outdoor ?? last.outdoor)
+                                                     outdoor: outdoor ?? last.outdoor,
+                                                     isEco: last.isEco == true || isEco)
             opened = false
         } else {
             list.append(TemperatureSample(time: minute, room: room, target: target, isHeating: isHeating,
-                                          energyWh: energyWh, outdoor: outdoor))
+                                          energyWh: energyWh, outdoor: outdoor, isEco: isEco))
             opened = true
         }
         list.removeAll { now.timeIntervalSince($0.time) > Self.retention }
