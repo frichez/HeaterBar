@@ -19,6 +19,8 @@ It talks to them directly on the local network, no Philips account or cloud.
 
 `~/Library/Application Support/HeaterBar/logs/YYYY-MM-DD.csv`, kept 30 days: one
 line each time a heater's state changes (room-only changes are not logged).
+The table button at the bottom of the menu opens today's file in your
+spreadsheet app.
 
 | Column | Code | Values |
 |---|---|---|

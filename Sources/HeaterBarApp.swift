@@ -76,6 +76,18 @@ struct HeaterPanel: View {
             HStack {
                 Text(summary).font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                Button {
+                    let url = StatusLog.fileURL()
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        NSWorkspace.shared.open(url)
+                    } else {
+                        NSWorkspace.shared.open(url.deletingLastPathComponent())
+                    }
+                } label: {
+                    Image(systemName: "tablecells")
+                }
+                .buttonStyle(.borderless)
+                .help("Open today's log (CSV) in your spreadsheet app")
                 Button("Quit") { NSApp.terminate(nil) }
                     .buttonStyle(.borderless)
                     .keyboardShortcut("q")

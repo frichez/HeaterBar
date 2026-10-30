@@ -73,6 +73,11 @@ struct StatusLog {
         Self.append(fields.joined(separator: ","), day: now)
     }
 
+    /// The app's copy of a day's file, e.g. to open it in a spreadsheet.
+    static func fileURL(for day: Date = Date()) -> URL {
+        folders[0].url.appendingPathComponent(dayFormat.string(from: day) + ".csv")
+    }
+
     private static func append(_ line: String, day: Date) {
         let name = dayFormat.string(from: day) + ".csv"
         let manager = FileManager.default
