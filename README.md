@@ -63,7 +63,9 @@ what makes it report, one beep instead of the two of the timer on/off check.
 ## Desk thermometer
 
 On the Office card the room temperature is the desk's (humidity and battery
-on hover), with the heater's own sensor, next to the heater, small below it. It comes from a
+on hover), with the heater's own sensor, next to the heater, small below it.
+Outside 35–60 % humidity a small hint appears beside it: blue when humid,
+with the dew point (condensation on the window, mould), orange when dry. It comes from a
 Xiaomi Monitor 3 Mini (MJWSD06MMC) running pvvx's
 [ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer) firmware
 (`MJ6_v…`), which broadcasts them in the open BTHome format: no pairing, no

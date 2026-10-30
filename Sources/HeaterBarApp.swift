@@ -328,10 +328,18 @@ struct HeaterCard: View {
                 // heater, comes small underneath.
                 let desk = store.desk(for: heater)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text((desk?.temperature ?? heater.roomTemperature).map { String(format: "%.1f°", $0) } ?? "–")
-                        .font(.system(size: 30, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
+                    HStack(alignment: .center, spacing: 6) {
+                        Text((desk?.temperature ?? heater.roomTemperature).map { String(format: "%.1f°", $0) } ?? "–")
+                            .font(.system(size: 30, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                        if let hint = Self.humidityHint(desk) {
+                            Label(hint.text, systemImage: "humidity.fill")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(hint.color)
+                                .help(hint.help)
+                        }
+                    }
                     Text("Room" + (desk == nil ? "" : heater.roomTemperature.map { String(format: " · heater %.1f°", $0) } ?? ""))
                         .font(.caption2).foregroundStyle(.secondary)
                 }
@@ -517,6 +525,26 @@ struct HeaterCard: View {
         .disabled(heater.timerMinutesLeft == nil || heater.isOn != true)
         .help("Timer: switches the heater off after the chosen time." + (isActive ? " \(label)." : "")
               + (heater.isOn == true ? "" : " Available while the heater is on: switching on clears it."))
+    }
+
+    /// Only outside 35–60 %: air too humid in winter means condensation, and
+    /// mould, on cold spots such as the window; too dry, eyes and throat suffer.
+    private static func humidityHint(_ desk: DeskReading?) -> (text: String, color: Color, help: String)? {
+        guard let desk, let humidity = desk.humidity else { return nil }
+        let percent = Int(humidity.rounded())
+        if percent > 60 {
+            // Magnus formula: below this surface temperature, water condenses.
+            let gamma = log(humidity / 100) + 17.62 * desk.temperature / (243.12 + desk.temperature)
+            let dewPoint = 243.12 * gamma / (17.62 - gamma)
+            return ("\(percent)%", .blue, String(format: "Humid air (%d %%): water condenses on anything colder than %.1f° "
+                + "(the dew point), such as the window on a cold night, and mould can follow. "
+                + "Airing the room for a few minutes helps; 40–50 %% is ideal in winter.", percent, dewPoint))
+        }
+        if percent < 35 {
+            return ("\(percent)%", .orange, "Dry air (\(percent) %): below 35 % eyes and throat dry out, and heating dries "
+                + "the air further. 40–50 % is ideal.")
+        }
+        return nil
     }
 
     private static func roomHelp(_ desk: DeskReading?) -> String {
