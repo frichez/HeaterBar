@@ -527,8 +527,9 @@ struct HeaterCard: View {
               + (heater.isOn == true ? "" : " Available while the heater is on: switching on clears it."))
     }
 
-    /// Only outside 35–60 %: air too humid in winter means condensation, and
-    /// mould, on cold spots such as the window; too dry, eyes and throat suffer.
+    /// Always shown, in colour outside 35–60 %: air too humid in winter means
+    /// condensation, and mould, on cold spots such as the window; too dry, eyes
+    /// and throat suffer.
     private static func humidityHint(_ desk: DeskReading?) -> (text: String, color: Color, help: String)? {
         guard let desk, let humidity = desk.humidity else { return nil }
         let percent = Int(humidity.rounded())
@@ -544,7 +545,7 @@ struct HeaterCard: View {
             return ("\(percent)%", .orange, "Dry air (\(percent) %): below 35 % eyes and throat dry out, and heating dries "
                 + "the air further. 40–50 % is ideal.")
         }
-        return nil
+        return ("\(percent)%", .secondary, "Humidity \(percent) %: comfortable (35–60 %, ideally 40–50 % in winter).")
     }
 
     private static func roomHelp(_ desk: DeskReading?) -> String {
