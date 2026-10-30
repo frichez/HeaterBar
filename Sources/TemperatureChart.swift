@@ -45,11 +45,12 @@ struct TemperatureChart: View {
                             .stroke(Color.secondary, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
                             .frame(width: 12, height: 1)
                     }
-                    legendItem("Heating") {
+                    legendItem("Heating", help: durationHelp("Heating", minutes: visible.filter(\.isHeating).count)) {
                         RoundedRectangle(cornerRadius: 2).fill(Color.orange.opacity(0.3)).frame(width: 10, height: 8)
                     }
                     if !ecoSpans.isEmpty {
-                        legendItem("Eco") {
+                        legendItem("Eco", help: durationHelp("Eco", minutes: visible.filter { $0.isEco == true }.count)
+                                   + ": target lowered or heater switched off while you were away") {
                             RoundedRectangle(cornerRadius: 2).fill(Color.green.opacity(0.3)).frame(width: 10, height: 8)
                         }
                     }
@@ -117,11 +118,20 @@ struct TemperatureChart: View {
         .frame(minHeight: 50, maxHeight: chartHeight)
     }
 
-    private func legendItem(_ title: String, @ViewBuilder swatch: () -> some View) -> some View {
+    private func legendItem(_ title: String, help: String? = nil, @ViewBuilder swatch: () -> some View) -> some View {
         HStack(spacing: 4) {
             swatch()
             Text(title).font(.system(size: 9)).foregroundStyle(.secondary).fixedSize()
         }
+        .contentShape(Rectangle())
+        .help(help ?? "")
+    }
+
+    /// E.g. "Heating 3h 12m today", from the day's one-per-minute readings.
+    private func durationHelp(_ title: String, minutes: Int) -> String {
+        let hours = minutes / 60, rest = minutes % 60
+        let duration = hours == 0 ? "\(rest)m" : rest == 0 ? "\(hours)h" : "\(hours)h \(rest)m"
+        return "\(title) \(duration) " + (daysBack == 0 ? "today" : "that day")
     }
 
     private func tooltip(for sample: TemperatureSample) -> some View {

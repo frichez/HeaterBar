@@ -30,7 +30,7 @@ line each time a heater's state changes (room-only changes are not logged).
 | target | D0310E | °C |
 | room | D03224 | °C |
 | oscillation | D0320F | 0 off; on is 45 on the CX3120, 17920 on the CX5120 (which is switched on with 17222) |
-| timer_step | D03110 | 0 off, 1 = 30 min, n = n − 1 hours |
+| timer_step | D03110 | 0 off, 1 = 30 min, n = n − 1 hours. The card counts it down: the CX3120 reports the minutes left (D03211), the CX5120 only the setting, so HeaterBar counts from when it saw it set. Switching on clears a timer, so it can only be set while on |
 | estimated_watts | | from the level at Philips' rated power. CX3120: Low 800, Medium 1,200, High 2,000 W, fan 2 W (until 2026-10-28 10:4x: measured 900 / 1,100 / 1,900). CX5120: Low 1,200, High 2,000 W, fan 8 W (until 2026-10-28 19:1x it used the CX3120 figures). +3 W oscillating |
 | outdoor | | °C in Manage, from Open-Meteo (added 2026-10-28 10:1x) |
 | away | | 1 while nobody is at the Mac (see Eco when away) |

@@ -483,9 +483,11 @@ struct HeaterCard: View {
 
     private var timerMenu: some View {
         let minutes = heater.timerMinutesLeft ?? 0
-        let isActive = minutes > 0
+        // Switching on clears a timer, so one only counts while on.
+        let isActive = minutes > 0 && heater.isOn == true
         let choices = HeaterStore.timerChoices.filter { heater.hasTimerCountdown || $0.step > 1 }
-        let label = heater.hasTimerCountdown ? "Off in \(Self.duration(minutes))" : "Timer \(Self.duration(minutes))"
+        let label = heater.hasTimerCountdown || heater.timerIsCounted
+            ? "Off in \(Self.duration(minutes))" : "Timer \(Self.duration(minutes))"
         return Menu {
             ForEach(choices, id: \.step) { choice in
                 Button("Off in \(choice.label)") { store.setTimer(step: choice.step, for: heater.id) }
@@ -507,8 +509,9 @@ struct HeaterCard: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(heater.timerMinutesLeft == nil)
-        .help("Timer: switches the heater off after the chosen time." + (isActive ? " \(label)." : ""))
+        .disabled(heater.timerMinutesLeft == nil || heater.isOn != true)
+        .help("Timer: switches the heater off after the chosen time." + (isActive ? " \(label)." : "")
+              + (heater.isOn == true ? "" : " Available while the heater is on: switching on clears it."))
     }
 
     private static func duration(_ minutes: Int) -> String {

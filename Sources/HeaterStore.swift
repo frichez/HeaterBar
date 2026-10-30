@@ -123,6 +123,9 @@ struct HeaterState: Identifiable, Codable {
     /// Whether the model counts the timer down (CX3120). Others (CX5120) only
     /// report the chosen duration and start at one hour.
     var hasTimerCountdown = false
+    /// Without a countdown, whether HeaterBar saw the timer start and counts
+    /// it down itself; otherwise the minutes are the full chosen duration.
+    var timerIsCounted = false
     /// Estimated present draw, from the output level.
     var watts = 0.0
     /// When the shown state was reported, and whether it came from the last
@@ -218,6 +221,9 @@ final class HeaterStore: ObservableObject {
     private var lastCommand: [String: [String: UUID]] = [:]
     /// Power in each heater's last live status, to see it being switched on.
     private var reportedOn: [String: Bool] = [:]
+    /// For heaters without a countdown (CX5120): the timer step and when it
+    /// was set, seen in a live report or sent from here, to count it down.
+    private var timerStarts: [String: (step: Int, at: Date)] = [:]
     private var statusLog = StatusLog()
     private var roomReadings: [String: [(time: Date, value: Double)]] = [:]
 
@@ -278,6 +284,18 @@ final class HeaterStore: ObservableObject {
                 let now = Date()
                 for heater in heaters where lastPower[heater.id] != nil && !heater.isStale {
                     accrue(heater.id, newWatts: heater.watts, at: now)
+                }
+            }
+        }
+        // Timers HeaterBar counts down itself (CX5120, which doesn't report
+        // the minutes left): the shown minute changes within 5 s of the real one.
+        Task { @MainActor in
+            while true {
+                try? await Task.sleep(for: .seconds(5))
+                for index in heaters.indices where heaters[index].isOn == true {
+                    guard let start = timerStarts[heaters[index].id] else { continue }
+                    let minutes = timerMinutes(step: start.step, for: heaters[index].id)
+                    if heaters[index].timerMinutesLeft != minutes { heaters[index].timerMinutesLeft = minutes }
                 }
             }
         }
@@ -468,7 +486,21 @@ final class HeaterStore: ObservableObject {
     func setTimer(step: Int, for id: String) {
         guard let index = heaters.firstIndex(where: { $0.id == id }) else { return }
         heaters[index].timerMinutesLeft = Self.minutes(forTimerStep: step)
+        if !heaters[index].hasTimerCountdown {
+            // Setting it again restarts it, which the heater doesn't report.
+            timerStarts[id] = step == 0 ? nil : (step, Date())
+            heaters[index].timerIsCounted = step != 0
+        }
         send(["D03110": step], to: id)
+    }
+
+    /// Minutes left on a timer the heater doesn't count down: the full
+    /// duration until HeaterBar has seen it start.
+    private func timerMinutes(step: Int, for id: String) -> Int {
+        let total = Self.minutes(forTimerStep: step)
+        guard let start = timerStarts[id], start.step == step else { return total }
+        let secondsLeft = Double(total * 60) - Date().timeIntervalSince(start.at)
+        return max(0, Int((secondsLeft / 60).rounded(.up)))
     }
 
     private static func minutes(forTimerStep step: Int) -> Int {
@@ -589,8 +621,8 @@ final class HeaterStore: ObservableObject {
         // A running timer's step is known only where minutes map back to one
         // (the CX5120 reports no countdown, just the step).
         let minutes = heater.timerMinutesLeft ?? 0
-        link.seed(timerStep: minutes == 0 ? 0
-                  : (1...13).first { Self.minutes(forTimerStep: $0) == minutes },
+        link.seed(timerStep: timerStarts[id]?.step ?? (minutes == 0 ? 0
+                  : (1...13).first { Self.minutes(forTimerStep: $0) == minutes }),
                   isOn: heater.isOn)
         link.start()
     }
@@ -661,8 +693,16 @@ final class HeaterStore: ObservableObject {
         if let minutes = status["D03211"] as? Int {
             heaters[index].timerMinutesLeft = minutes
         } else if let step = status["D03110"] as? Int {
-            // Models without a countdown (CX5120) only report the chosen step.
-            heaters[index].timerMinutesLeft = Self.minutes(forTimerStep: step)
+            // Models without a countdown (CX5120) only report the chosen step,
+            // and only when it changes: count down from when it was seen to.
+            // Only while on: switching on clears a timer set while off.
+            if heaters[index].isOn != true || step == 0 {
+                timerStarts[id] = nil
+            } else if cachedTime == nil, timerStarts[id]?.step != step {
+                timerStarts[id] = (step, Date())
+            }
+            heaters[index].timerMinutesLeft = timerMinutes(step: step, for: id)
+            heaters[index].timerIsCounted = timerStarts[id] != nil
         }
         if let room = status["D03224"] as? Int {
             let reading = Double(room) / 10
