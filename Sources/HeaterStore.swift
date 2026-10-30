@@ -331,15 +331,11 @@ final class HeaterStore: ObservableObject {
         links.values.forEach { $0.refresh() }
     }
 
+    /// An auto-off timer is not sent with "on": the heater drops it while
+    /// switching on. It follows the "on" report instead (see `apply`), as when
+    /// the heater is switched on at its button or in Air+.
     func setPower(_ isOn: Bool, for id: String, reason: String = "you") {
-        var values: [String: Any] = ["D03102": isOn ? 1 : 0]
-        // Its auto-off timer goes in the same command: one beep.
-        if isOn, let step = autoOffStep(for: id), let index = heaters.firstIndex(where: { $0.id == id }),
-           (heaters[index].timerMinutesLeft ?? 0) == 0 {
-            values["D03110"] = step
-            heaters[index].timerMinutesLeft = Self.minutes(forTimerStep: step)
-        }
-        send(values, to: id, reason: reason, isOn: isOn)
+        send(["D03102": isOn ? 1 : 0], to: id, reason: reason, isOn: isOn)
     }
 
     func adjustTarget(by step: Int, for id: String) {
@@ -581,7 +577,9 @@ final class HeaterStore: ObservableObject {
                     }
                     return
                 }
-                let missed = current.filter { !Self.matches($0.value, report.values[$0.key], key: $0.key) }
+                var missed = current.filter { !Self.matches($0.value, report.values[$0.key], key: $0.key) }
+                // Switching on clears a timer, so one for a heater that is off by now is of no use.
+                if (report.values["D03102"] as? Int) == 0 { missed["D03110"] = nil }
                 guard !missed.isEmpty else { return }
                 storeLog.error("\(id, privacy: .public) accepted \(Self.describe(missed), privacy: .public) but did not apply it; sending it again")
                 let code = missed["D0310C"] as? Int

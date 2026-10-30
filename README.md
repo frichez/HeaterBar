@@ -56,8 +56,9 @@ offers 30 minutes.
 
 Heaters elsewhere (the Bathroom) get only auto-off in that menu: whenever the
 heater is switched on, here, in Air+ or on the heater, without a timer, its
-timer is set (1, 2 or 4 hours), in the same command when switched on from
-HeaterBar. At launch, if it is on without a timer, setting that timer is also
+timer is set (1, 2 or 4 hours) as soon as it reports being on: not in the
+"on" command itself, which the heater drops while switching on, so two beeps
+wherever it was switched on. At launch, if it is on without a timer, setting that timer is also
 what makes it report, one beep instead of the two of the timer on/off check.
 
 ## Desk thermometer
