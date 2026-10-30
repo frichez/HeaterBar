@@ -37,15 +37,20 @@ struct TemperatureChart: View {
             } else {
                 chart
                 HStack(spacing: 12) {
-                    legendItem("Temperature") {
+                    legendItem(hasDesk ? "Heater" : "Room") {
                         Capsule().fill(Color.primary.opacity(0.85)).frame(width: 12, height: 2)
+                    }
+                    if hasDesk {
+                        legendItem("Desk") {
+                            Capsule().fill(Color.blue.opacity(0.8)).frame(width: 12, height: 2)
+                        }
                     }
                     legendItem("Target") {
                         Path { $0.move(to: .zero); $0.addLine(to: CGPoint(x: 12, y: 0)) }
                             .stroke(Color.secondary, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
                             .frame(width: 12, height: 1)
                     }
-                    legendItem("Heating", help: durationHelp("Heating", minutes: visible.filter(\.isHeating).count)) {
+                    legendItem("Heating") {
                         RoundedRectangle(cornerRadius: 2).fill(Color.orange.opacity(0.3)).frame(width: 10, height: 8)
                     }
                     if !ecoSpans.isEmpty {
@@ -75,6 +80,13 @@ struct TemperatureChart: View {
                     .foregroundStyle(Color.secondary)
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
                     .interpolationMethod(.stepEnd)
+            }
+            ForEach(visible.filter { $0.desk != nil }) { sample in
+                LineMark(x: .value("Time", sample.time), y: .value("Desk", sample.desk ?? 0),
+                         series: .value("Series", "Desk"))
+                    .foregroundStyle(Color.blue.opacity(0.8))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                    .interpolationMethod(.monotone)
             }
             ForEach(visible) { sample in
                 LineMark(x: .value("Time", sample.time), y: .value("Room", sample.room),
@@ -127,7 +139,7 @@ struct TemperatureChart: View {
         .help(help ?? "")
     }
 
-    /// E.g. "Heating 3h 12m today", from the day's one-per-minute readings.
+    /// E.g. "Eco 3h 12m today", from the day's one-per-minute readings.
     private func durationHelp(_ title: String, minutes: Int) -> String {
         let hours = minutes / 60, rest = minutes % 60
         let duration = hours == 0 ? "\(rest)m" : rest == 0 ? "\(hours)h" : "\(hours)h \(rest)m"
@@ -137,6 +149,10 @@ struct TemperatureChart: View {
     private func tooltip(for sample: TemperatureSample) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(String(format: "%.1f°", sample.room)).font(.caption.weight(.semibold)).monospacedDigit()
+            if let desk = sample.desk {
+                Text(String(format: "Desk %.1f°", desk))
+                    .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+            }
             Text(sample.time, format: .dateTime.hour().minute()).font(.caption2).foregroundStyle(.secondary)
             if sample.isHeating {
                 Text("Heating").font(.caption2).foregroundStyle(.secondary)
@@ -154,6 +170,8 @@ struct TemperatureChart: View {
         guard let selection else { return nil }
         return visible.min { abs($0.time.timeIntervalSince(selection)) < abs($1.time.timeIntervalSince(selection)) }
     }
+
+    private var hasDesk: Bool { visible.contains { $0.desk != nil } }
 
     private var heatingSpans: [ClosedRange<Date>] { spans { $0.isHeating } }
     private var ecoSpans: [ClosedRange<Date>] { spans { $0.isEco == true } }
@@ -173,7 +191,7 @@ struct TemperatureChart: View {
     }
 
     private var yDomain: ClosedRange<Double> {
-        let values = visible.map(\.room) + visible.compactMap { $0.target.map(Double.init) }
+        let values = visible.map(\.room) + visible.compactMap(\.desk) + visible.compactMap { $0.target.map(Double.init) }
         guard let low = values.min(), let high = values.max() else { return 15...25 }
         return (low - 0.5).rounded(.down)...(high + 0.5).rounded(.up)
     }

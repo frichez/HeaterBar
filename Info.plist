@@ -18,6 +18,8 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>HeaterBar reads the temperature your desk thermometer broadcasts over Bluetooth.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>HeaterBar talks to your Philips heaters directly on your local network.</string>
 </dict>

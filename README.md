@@ -34,6 +34,8 @@ line each time a heater's state changes (room-only changes are not logged).
 | estimated_watts | | from the level at Philips' rated power. CX3120: Low 800, Medium 1,200, High 2,000 W, fan 2 W (until 2026-10-28 10:4x: measured 900 / 1,100 / 1,900). CX5120: Low 1,200, High 2,000 W, fan 8 W (until 2026-10-28 19:1x it used the CX3120 figures). +3 W oscillating |
 | outdoor | | °C in Manage, from Open-Meteo (added 2026-10-28 10:1x) |
 | away | | 1 while nobody is at the Mac (see Eco when away) |
+| desk | | °C from the desk thermometer, on the Office lines only (added 2026-10-30 20:4x; files from that day on were given the empty columns) |
+| desk_humidity | | % from the desk thermometer |
 | event | | on lines of their own: each command HeaterBar sent, why, and the heater's answer, e.g. `command D03102=1 (eco: you are back): accepted`; a command re-sent because the heater accepted it but reported otherwise 12 s later ends in `, check`, and `check: no report since …; not sent again` when a heater that only reports changes (CX5120) stayed silent; also `unreachable: no answer to ping`, `reachable again`, and `fault code N` / `fault cleared` (D03240, 0 when all is well; Philips does not document the codes) |
 
 ## Eco when away
@@ -57,6 +59,24 @@ heater is switched on, here, in Air+ or on the heater, without a timer, its
 timer is set (1, 2 or 4 hours), in the same command when switched on from
 HeaterBar. At launch, if it is on without a timer, setting that timer is also
 what makes it report, one beep instead of the two of the timer on/off check.
+
+## Desk thermometer
+
+On the Office card the room temperature is the desk's (humidity and battery
+on hover), with the heater's own sensor, next to the heater, small below it. It comes from a
+Xiaomi Monitor 3 Mini (MJWSD06MMC) running pvvx's
+[ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer) firmware
+(`MJ6_v…`), which broadcasts them in the open BTHome format: no pairing, no
+key, no Xiaomi account once flashed. HeaterBar listens to those Bluetooth
+broadcasts (macOS asks once for Bluetooth access) and remembers the first
+thermometer it hears. The graph draws it as a blue line beside the heater's, and a reading older
+than 5 minutes is not shown.
+
+Flashing the factory firmware (2.1.1.0009) over Bluetooth needed its Mi Token
+and Bind Key once: add it in Mi Home, get both with
+[Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor),
+then log in and flash in pvvx's
+[TelinkMiFlasher](https://pvvx.github.io/ATC_MiThermometer/TelinkMiFlasher.html) in Chrome.
 
 `history.json` in the same folder holds one reading per minute, kept a week (room, target, Eco,
 heating, energy) for the graph, which shows one day at a time. `energy.json` keeps each heater's energy per day for good,

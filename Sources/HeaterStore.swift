@@ -197,6 +197,9 @@ final class HeaterStore: ObservableObject {
     /// for a heater in the Mac's room, after being on that long for the others.
     @Published private(set) var awayOffSteps: [String: Int] = [:]
     @Published private(set) var isAway = false
+    /// The desk thermometer's latest broadcast (see `DeskThermometer`).
+    @Published private(set) var desk: DeskReading?
+    private let deskThermometer = DeskThermometer()
     /// What to put back when someone returns, per heater: the target and its
     /// setback, or that it was switched off. Saved, so a restart while away
     /// still restores.
@@ -265,6 +268,8 @@ final class HeaterStore: ObservableObject {
         for (id, link) in links { link.setAutoOff(step: autoOffStep(for: id)) }
         awayRestore = UserDefaults.standard.dictionary(forKey: Self.awayRestoreKey) as? [String: [String: Int]] ?? [:]
         presence.onChange = { [weak self] away in self?.presenceChanged(away) }
+        deskThermometer.onReading = { [weak self] reading in self?.desk = reading }
+        deskThermometer.start()
         // Heaters still set back from before a restart must come back on return.
         isAway = !awayRestore.isEmpty
         presence.start(away: isAway)
@@ -414,6 +419,13 @@ final class HeaterStore: ObservableObject {
     private static let presenceRooms: Set<String> = ["Office"]
 
     func followsPresence(_ heater: HeaterState) -> Bool { Self.presenceRooms.contains(heater.name) }
+
+    /// The desk thermometer's reading for the room this Mac is in, when it
+    /// was heard in the last 5 minutes.
+    func desk(for heater: HeaterState, now: Date = Date()) -> DeskReading? {
+        guard followsPresence(heater), let desk, now.timeIntervalSince(desk.time) < 300 else { return nil }
+        return desk
+    }
 
     /// Eco when away: on leaving, each heater that is on and has an action gets
     /// its target lowered or is switched off; on return it is put back, unless
@@ -740,7 +752,7 @@ final class HeaterStore: ObservableObject {
         let watts = Self.watts(for: heaters[index], level: status["D0310D"] as? Int)
         heaters[index].watts = watts
         statusLog.record(status, heater: heaters[index].name, room: heaters[index].roomTemperature, watts: watts,
-                         outdoor: outdoor?.temperature, away: isAway, at: now)
+                         outdoor: outdoor?.temperature, away: isAway, desk: desk(for: heaters[index], now: now), at: now)
         accrue(id, newWatts: watts, at: now)
         if cachedTime == nil, let power = status["D03102"] as? Int {
             let wasOn = reportedOn[id]
@@ -767,7 +779,7 @@ final class HeaterStore: ObservableObject {
         if let room = heater.roomTemperature,
            history.record(room: room, target: heater.target, isHeating: heater.isOn == true && heater.isHeating,
                           isEco: awayRestore[id] != nil, energyWh: energyWh, outdoor: outdoor?.temperature,
-                          for: id, at: now) {
+                          desk: desk(for: heater, now: now), for: id, at: now) {
             history.save()
             ledger.save()
         }

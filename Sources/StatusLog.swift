@@ -8,7 +8,8 @@ import Foundation
 struct StatusLog {
     static let columns = [
         "time", "heater", "power", "selected_mode", "running_mode", "level", "function",
-        "target", "room", "oscillation", "timer_step", "estimated_watts", "outdoor", "away", "event",
+        "target", "room", "oscillation", "timer_step", "estimated_watts", "outdoor", "away",
+        "desk", "desk_humidity", "event",
     ]
     private static let keys = ["D03102", "D0310C", "D0313F", "D0310D", "D0310A", "D0310E", "D0320F", "D03110"]
     private static let retentionDays = 30
@@ -41,7 +42,7 @@ struct StatusLog {
     }()
 
     mutating func record(_ status: [String: Any], heater: String, room: Double?, watts: Double,
-                         outdoor: Double?, away: Bool, at now: Date = Date()) {
+                         outdoor: Double?, away: Bool, desk: DeskReading? = nil, at now: Date = Date()) {
         // Presence is part of the state: leaving and returning are worth a line.
         let values = Self.keys.map { status[$0].map { "\($0)" } ?? "" } + [away ? "1" : "0"]
         guard lastLine[heater] != values else { return }
@@ -49,10 +50,12 @@ struct StatusLog {
         let time = Self.timeFormat.string(from: now)
         let room = room.map { String(format: "%.1f", $0) } ?? ""
         let outdoor = outdoor.map { String(format: "%.1f", $0) } ?? ""
+        let deskTemperature = desk.map { String(format: "%.1f", $0.temperature) } ?? ""
+        let deskHumidity = desk?.humidity.map { String(format: "%.0f", $0) } ?? ""
         // Columns: power … target (values 0–5), room, oscillation and timer (6–7),
-        // watts, outdoor, away (8).
+        // watts, outdoor, away (8), desk, desk humidity.
         let fields = [time, heater.replacingOccurrences(of: ",", with: " ")] + values[0...5] + [room]
-            + values[6...7] + [String(Int(watts.rounded())), outdoor, values[8], ""]
+            + values[6...7] + [String(Int(watts.rounded())), outdoor, values[8], deskTemperature, deskHumidity, ""]
         Self.append(fields.joined(separator: ","), day: now)
     }
 
@@ -75,6 +78,7 @@ struct StatusLog {
         let manager = FileManager.default
         for folder in folders {
             let url = folder.url.appendingPathComponent(name)
+            upgradeColumns(of: url)
             if !manager.fileExists(atPath: url.path) {
                 try? manager.createDirectory(at: folder.url, withIntermediateDirectories: true)
                 try? (columns.joined(separator: ",") + "\n").write(to: url, atomically: true, encoding: .utf8)
@@ -85,6 +89,28 @@ struct StatusLog {
             try? handle.write(contentsOf: Data((line + "\n").utf8))
             try? handle.close()
         }
+    }
+
+    private static var upgraded: Set<URL> = []
+
+    /// A file started before columns were added (desk, desk_humidity on
+    /// 2026-10-30) gets them, empty, before its last column (event), so a day
+    /// keeps one layout.
+    private static func upgradeColumns(of url: URL) {
+        guard !upgraded.contains(url) else { return }
+        upgraded.insert(url)
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let header = text.split(separator: "\n", maxSplits: 1).first,
+              header != columns.joined(separator: ",") else { return }
+        let missing = columns.count - header.split(separator: ",", omittingEmptySubsequences: false).count
+        guard missing > 0 else { return }
+        let lines = text.split(separator: "\n").dropFirst().map { line -> String in
+            var fields = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            fields.insert(contentsOf: Array(repeating: "", count: missing), at: max(0, fields.count - 1))
+            return fields.joined(separator: ",")
+        }
+        try? ([columns.joined(separator: ",")] + lines).joined(separator: "\n").appending("\n")
+            .write(to: url, atomically: true, encoding: .utf8)
     }
 
     private static func prune(_ folder: URL) {

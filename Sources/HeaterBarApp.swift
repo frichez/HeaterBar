@@ -323,14 +323,19 @@ struct HeaterCard: View {
             }
 
             HStack(alignment: .center) {
+                // In the room this Mac is in, the desk thermometer is the room
+                // temperature that matters; the heater's own sensor, next to the
+                // heater, comes small underneath.
+                let desk = store.desk(for: heater)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(heater.roomTemperature.map { String(format: "%.1f°", $0) } ?? "–")
+                    Text((desk?.temperature ?? heater.roomTemperature).map { String(format: "%.1f°", $0) } ?? "–")
                         .font(.system(size: 30, weight: .semibold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(.numericText())
-                    Text("Room").font(.caption2).foregroundStyle(.secondary)
+                    Text("Room" + (desk == nil ? "" : heater.roomTemperature.map { String(format: " · heater %.1f°", $0) } ?? ""))
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
-                .help("Room temperature measured by the heater's own sensor, averaged over the last minute")
+                .help(Self.roomHelp(desk))
                 Spacer()
                 VStack(spacing: 2) {
                     HStack(spacing: 6) {
@@ -512,6 +517,14 @@ struct HeaterCard: View {
         .disabled(heater.timerMinutesLeft == nil || heater.isOn != true)
         .help("Timer: switches the heater off after the chosen time." + (isActive ? " \(label)." : "")
               + (heater.isOn == true ? "" : " Available while the heater is on: switching on clears it."))
+    }
+
+    private static func roomHelp(_ desk: DeskReading?) -> String {
+        guard let desk else { return "Room temperature measured by the heater's own sensor, averaged over the last minute" }
+        var text = "Room temperature from the desk thermometer (Bluetooth)"
+        if let humidity = desk.humidity { text += String(format: ", humidity %.0f %%", humidity) }
+        if let battery = desk.battery { text += ", battery \(battery) %" }
+        return text + ". Below, the heater's own sensor, averaged over the last minute."
     }
 
     private static func duration(_ minutes: Int) -> String {
