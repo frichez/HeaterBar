@@ -63,6 +63,7 @@ final class HeaterLink: @unchecked Sendable {
     /// normal (some only report changes), so silence alone proves nothing.
     private var unansweredPings = 0
     private var lastPing = Date.distantPast
+    private var lastReopen = Date.distantPast
     /// Nil until the heater first answers or is given up on after launch.
     private var isReachable: Bool?
     private var retryAfterSync: [UUID: (values: [String: Any], reason: String, completion: (Bool) -> Void)] = [:]
@@ -237,6 +238,15 @@ final class HeaterLink: @unchecked Sendable {
             // Errors are often passing (the network is briefly "down" while
             // macOS checks Local Network access at launch), so keep listening.
             log.error("\(self.host, privacy: .public) receive failed: \(error.localizedDescription, privacy: .public)")
+            // But a socket that is no longer connected (after the Mac slept
+            // or changed network) stays dead: the link would only start over
+            // after a dozen unanswered asks, two minutes or more.
+            if case .posix(.ENOTCONN) = error, Date().timeIntervalSince(self.lastReopen) > 10 {
+                self.lastReopen = Date()
+                log.info("\(self.host, privacy: .public) socket gone, reconnecting")
+                self.connect()
+                return
+            }
             self.queue.asyncAfter(deadline: .now() + 1) { [weak self] in
                 guard let self, self.connection === connection else { return }
                 self.receive(on: connection)
