@@ -222,6 +222,9 @@ final class HeaterStore: ObservableObject {
     /// The latest command per heater and setting, so a check never undoes a
     /// later one.
     private var lastCommand: [String: [String: UUID]] = [:]
+    /// Heaters between the off and the on of a re-arm after fan, so switching
+    /// one off by hand in those 3 seconds is not undone.
+    private var rearming: [String: UUID] = [:]
     /// Power in each heater's last live status, to see it being switched on.
     private var reportedOn: [String: Bool] = [:]
     /// For heaters without a countdown (CX5120): the timer step and when it
@@ -336,6 +339,8 @@ final class HeaterStore: ObservableObject {
     /// switching on. It follows the "on" report instead (see `apply`), as when
     /// the heater is switched on at its button or in Air+.
     func setPower(_ isOn: Bool, for id: String, reason: String = "you") {
+        // Switched in the middle of a re-arm: its "on" must not undo this.
+        rearming[id] = nil
         send(["D03102": isOn ? 1 : 0], to: id, reason: reason, isOn: isOn)
     }
 
@@ -361,14 +366,19 @@ final class HeaterStore: ObservableObject {
     /// Coming back from fan-only, a heater can keep its element off and blow
     /// cold air while reporting that it heats; its status cannot tell the two
     /// apart. Switching it off and on again (in the new mode) re-arms it.
+    /// A power command meanwhile cancels the "on" (see `rearming`).
     private func rearmHeating(_ id: String) {
         guard let link = links[id] else { return }
+        let token = UUID()
+        rearming[id] = token
         holdPower(on: id)
         link.send(["D03102": 0], reason: "re-arm after fan (off)") { [weak self] ok in
             guard ok else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 MainActor.assumeIsolated {
-                    self?.holdPower(on: id)
+                    guard let self, self.rearming[id] == token else { return }
+                    self.rearming[id] = nil
+                    self.holdPower(on: id)
                     link.send(["D03102": 1], reason: "re-arm after fan (on)") { _ in }
                 }
             }
