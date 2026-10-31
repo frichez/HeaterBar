@@ -84,8 +84,9 @@ Xiaomi Monitor 3 Mini (MJWSD06MMC) running pvvx's
 (`MJ6_v…`), which broadcasts them in the open BTHome format: no pairing, no
 key, no Xiaomi account once flashed. HeaterBar listens to those Bluetooth
 broadcasts (macOS asks once for Bluetooth access) and remembers the first
-thermometer it hears. The graph draws it as a blue line beside the heater's
-(its humidity in the tooltip), and a reading older
+thermometer it hears. The graph draws it as a blue line beside the heater's,
+and its °C | % switch shows the desk humidity instead (40–60 % shaded), on its
+own scale rather than a second axis. A reading older
 than 5 minutes is not shown.
 
 Flashing the factory firmware (2.1.1.0009) over Bluetooth needed its Mi Token

@@ -130,6 +130,7 @@ struct HeaterCard: View {
     @State private var isFlipped = false
     /// The day the graph shows: 0 for today, 1 for yesterday, and so on.
     @State private var daysBack = 0
+    @State private var showsHumidity = false
     /// Whether the front's energy line shows the total instead of today;
     /// a click switches, for every card.
     @AppStorage("energyShowsTotal") private var energyShowsTotal = false
@@ -185,11 +186,14 @@ struct HeaterCard: View {
             HStack {
                 Text(heater.name).font(.system(.body, weight: .semibold))
                 Spacer()
+                if samples.contains(where: { $0.deskHumidity != nil }) {
+                    ScalePicker(showsHumidity: $showsHumidity)
+                }
                 DayPicker(daysBack: $daysBack, samples: samples)
             }
             // The graph takes what the front leaves, so the total and the close
             // button land on the front's last line.
-            TemperatureChart(samples: samples, daysBack: daysBack, chartHeight: 130)
+            TemperatureChart(samples: samples, daysBack: daysBack, showsHumidity: showsHumidity, chartHeight: 130)
             dayEnergyRow
         }
         .frame(maxWidth: .infinity, alignment: .leading)
