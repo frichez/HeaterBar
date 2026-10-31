@@ -153,6 +153,10 @@ struct TemperatureChart: View {
                 Text(String(format: "Desk %.1f°", desk))
                     .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
             }
+            if let humidity = sample.deskHumidity {
+                Text(String(format: "Humidity %.0f %%", humidity))
+                    .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+            }
             Text(sample.time, format: .dateTime.hour().minute()).font(.caption2).foregroundStyle(.secondary)
             if sample.isHeating {
                 Text("Heating").font(.caption2).foregroundStyle(.secondary)

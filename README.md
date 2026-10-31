@@ -21,6 +21,14 @@ It talks to them directly on the local network, no Philips account or cloud.
 line each time a heater's state changes (room-only changes are not logged).
 The table button at the bottom of the menu opens today's file in your
 spreadsheet app.
+A copy of each file is kept for good in this project's `logs/` folder (not
+in git: it is personal data).
+
+`logs/minutes/YYYY-MM-DD.csv`, kept for good: one line per heater per minute
+(time, heater, room, target, heating, eco, energy_wh, outdoor, desk,
+desk_humidity), the data for learning how the room behaves over a winter.
+It is written as each minute ends, and at launch any day it lacks is filled
+in from the week-long `history.json`.
 
 | Column | Code | Values |
 |---|---|---|
@@ -68,13 +76,16 @@ what makes it report, one beep instead of the two of the timer on/off check.
 On the Office card the room temperature is the desk's (humidity and battery
 on hover), with the heater's own sensor, next to the heater, small below it.
 The desk humidity is shown beside it, in grey, or blue when over 60 % (with
-the dew point: condensation on the window, mould) and orange under 35 %. It comes from a
+the dew point: condensation on the window, mould) and orange under 35 %, with
+advice on hover. While it is over 60 % the menu bar icon turns blue too
+(orange, heating, wins). It comes from a
 Xiaomi Monitor 3 Mini (MJWSD06MMC) running pvvx's
 [ATC_MiThermometer](https://github.com/pvvx/ATC_MiThermometer) firmware
 (`MJ6_v…`), which broadcasts them in the open BTHome format: no pairing, no
 key, no Xiaomi account once flashed. HeaterBar listens to those Bluetooth
 broadcasts (macOS asks once for Bluetooth access) and remembers the first
-thermometer it hears. The graph draws it as a blue line beside the heater's, and a reading older
+thermometer it hears. The graph draws it as a blue line beside the heater's
+(its humidity in the tooltip), and a reading older
 than 5 minutes is not shown.
 
 Flashing the factory firmware (2.1.1.0009) over Bluetooth needed its Mi Token

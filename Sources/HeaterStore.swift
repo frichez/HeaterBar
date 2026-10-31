@@ -252,6 +252,7 @@ final class HeaterStore: ObservableObject {
            let saved = try? JSONDecoder().decode([HeaterState].self, from: data) {
             heaters = saved
         }
+        MinuteArchive.backfill(history, names: Dictionary(heaters.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a }))
         let cached = UserDefaults.standard.dictionary(forKey: Self.lastStatusKey) ?? [:]
         for heater in heaters {
             guard let entry = cached[heater.id] as? [String: Any],
@@ -418,6 +419,18 @@ final class HeaterStore: ObservableObject {
 
     /// The desk thermometer's reading for the room this Mac is in, when it
     /// was heard in the last 5 minutes.
+    /// The desk reading, unless it is over 5 minutes old.
+    var freshDesk: DeskReading? {
+        guard let desk, Date().timeIntervalSince(desk.time) < 300 else { return nil }
+        return desk
+    }
+
+    /// The desk air is humid (over 60 %), as the card shows it in blue.
+    var isDeskHumid: Bool {
+        guard let humidity = freshDesk?.humidity else { return false }
+        return Int(humidity.rounded()) > 60
+    }
+
     func desk(for heater: HeaterState, now: Date = Date()) -> DeskReading? {
         guard followsPresence(heater), let desk, now.timeIntervalSince(desk.time) < 300 else { return nil }
         return desk
@@ -778,6 +791,7 @@ final class HeaterStore: ObservableObject {
            history.record(room: room, target: heater.target, isHeating: heater.isOn == true && heater.isHeating,
                           isEco: awayRestore[id] != nil, energyWh: energyWh, outdoor: outdoor?.temperature,
                           desk: desk(for: heater, now: now), for: id, at: now) {
+            if let finished = history.lastFinished(for: id) { MinuteArchive.append(finished, heater: heater.name) }
             history.save()
             ledger.save()
         }

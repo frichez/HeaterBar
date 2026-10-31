@@ -5,23 +5,31 @@ import SwiftUI
 struct HeaterBarApp: App {
     @StateObject private var store = HeaterStore()
 
-    /// Menu bar symbols are drawn as monochrome templates; this one keeps its
-    /// orange so heating shows at a glance.
-    private static let heatingIcon: NSImage = {
-        let configuration = NSImage.SymbolConfiguration(paletteColors: [.systemOrange])
-        let image = NSImage(systemSymbolName: "heater.vertical.fill", accessibilityDescription: "Heating")?
+    /// Menu bar symbols are drawn as monochrome templates; these keep their
+    /// colour so heating (orange) and humid desk air (blue) show at a glance.
+    private static let heatingIcon = coloredIcon("heater.vertical.fill", .systemOrange, "Heating")
+    private static let humidIcons = [false, true].map {
+        coloredIcon($0 ? "heater.vertical.fill" : "heater.vertical", .systemBlue, "Humid air")
+    }
+
+    private static func coloredIcon(_ name: String, _ color: NSColor, _ description: String) -> NSImage {
+        let configuration = NSImage.SymbolConfiguration(paletteColors: [color])
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: description)?
             .withSymbolConfiguration(configuration) ?? NSImage()
         image.isTemplate = false
         return image
-    }()
+    }
 
     var body: some Scene {
         MenuBarExtra {
             HeaterPanel(store: store)
         } label: {
-            // Outlined when all are off, filled when one is on, orange when one heats.
+            // Outlined when all are off, filled when one is on, orange when one
+            // heats, otherwise blue while the desk air is humid.
             if store.heatersHeating > 0 {
                 Image(nsImage: Self.heatingIcon)
+            } else if store.isDeskHumid {
+                Image(nsImage: Self.humidIcons[store.heatersOn > 0 ? 1 : 0])
             } else {
                 Image(systemName: store.heatersOn > 0 ? "heater.vertical.fill" : "heater.vertical")
             }
@@ -345,6 +353,7 @@ struct HeaterCard: View {
                             .font(.system(size: 30, weight: .semibold, design: .rounded))
                             .monospacedDigit()
                             .contentTransition(.numericText())
+                            .help(Self.roomHelp(desk))
                         if let hint = Self.humidityHint(desk) {
                             Label(hint.text, systemImage: "humidity.fill")
                                 .font(.caption2.weight(.medium))
@@ -354,8 +363,8 @@ struct HeaterCard: View {
                     }
                     Text("Room" + (desk == nil ? "" : heater.roomTemperature.map { String(format: " · heater %.1f°", $0) } ?? ""))
                         .font(.caption2).foregroundStyle(.secondary)
+                        .help(Self.roomHelp(desk))
                 }
-                .help(Self.roomHelp(desk))
                 Spacer()
                 VStack(spacing: 2) {
                     HStack(spacing: 6) {
@@ -550,12 +559,16 @@ struct HeaterCard: View {
             let gamma = log(humidity / 100) + 17.62 * desk.temperature / (243.12 + desk.temperature)
             let dewPoint = 243.12 * gamma / (17.62 - gamma)
             return ("\(percent)%", .blue, String(format: "Humid air (%d %%): water condenses on anything colder than %.1f° "
-                + "(the dew point), such as the window on a cold night, and mould can follow. "
-                + "Airing the room for a few minutes helps; 40–50 %% is ideal in winter.", percent, dewPoint))
+                + "(the dew point), such as the window on a cold night, and mould can follow. 40–50 %% is ideal in winter.\n"
+                + "To bring it down: open the window wide (not tilted) for 5–10 minutes, 2–3 times a day, with the "
+                + "heater off; keep the bathroom and kitchen doors closed; dry no laundry in the room; keep the "
+                + "window's trickle vents open.", percent, dewPoint))
         }
         if percent < 35 {
             return ("\(percent)%", .orange, "Dry air (\(percent) %): below 35 % eyes and throat dry out, and heating dries "
-                + "the air further. 40–50 % is ideal.")
+                + "the air further. 40–50 % is ideal.\n"
+                + "To raise it: air in short bursts rather than long ones, keep the room a little cooler, or use a "
+                + "humidifier if it stays low.")
         }
         return ("\(percent)%", .secondary, "Humidity \(percent) %: comfortable (35–60 %, ideally 40–50 % in winter).")
     }
