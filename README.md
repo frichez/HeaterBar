@@ -54,7 +54,9 @@ The leaf button on the Office card (the room this Mac is in) chooses what that h
 Mac: nothing, lower the target by 2° or 4°, or switch off. Away means the screen
 locked, or no keyboard or mouse input, for 10 minutes, or the Mac going to sleep
 (acted on at once). Back means unlocked and used again: the target is restored,
-or the heater switched back on, unless it was changed meanwhile. Only heaters
+or the heater switched back on, unless it was changed meanwhile. If the
+heater does not answer (the Mac just woke, a Wi-Fi drop), that is tried
+again 30 seconds later or once it is reachable again, up to 5 times. Only heaters
 that are on are touched; each change is a command, so it beeps.
 
 The same menu can also switch the heater off after a long absence (1, 2 or 4
@@ -70,6 +72,13 @@ timer is set (1, 2 or 4 hours) as soon as it reports being on: not in the
 "on" command itself, which the heater drops while switching on, so two beeps
 wherever it was switched on. At launch, if it is on without a timer, setting that timer is also
 what makes it report, one beep instead of the two of the timer on/off check.
+
+When the Mac shuts down, HeaterBar switches off the heaters
+that are on before it quits (macOS waits for it, 4 seconds at most), so
+none is left heating with nobody to watch it. Each heater can be kept on
+instead, in its leaf menu ("On shutdown"). A restart, logging out, or Quit
+in the menu, leaves them as they are. The log shows it as
+`command D03102=0 (Mac shutting down): accepted`.
 
 ## Desk thermometer
 

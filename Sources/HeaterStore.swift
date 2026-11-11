@@ -207,6 +207,9 @@ final class HeaterStore: ObservableObject {
     private let presence = PresenceMonitor()
     private static let awayActionsKey = "awayActions"
     private static let awayOffStepsKey = "awayOffSteps"
+    /// Heaters left on when the Mac shuts down; all others are switched off.
+    @Published private(set) var keptOnAtShutdown: Set<String> = []
+    private static let keptOnAtShutdownKey = "keptOnAtShutdown"
     private static let awayRestoreKey = "awayRestore"
 
     private var links: [String: HeaterLink] = [:]
@@ -225,6 +228,9 @@ final class HeaterStore: ObservableObject {
     /// Heaters between the off and the on of a re-arm after fan, so switching
     /// one off by hand in those 3 seconds is not undone.
     private var rearming: [String: UUID] = [:]
+    /// Eco restores in flight, and how often each was tried since the return.
+    private var restoring: Set<String> = []
+    private var restoreAttempts: [String: Int] = [:]
     /// Power in each heater's last live status, to see it being switched on.
     private var reportedOn: [String: Bool] = [:]
     /// For heaters without a countdown (CX5120): the timer step and when it
@@ -269,6 +275,7 @@ final class HeaterStore: ObservableObject {
         let savedActions = UserDefaults.standard.dictionary(forKey: Self.awayActionsKey) as? [String: String] ?? [:]
         awayActions = savedActions.compactMapValues(AwayAction.init)
         awayOffSteps = UserDefaults.standard.dictionary(forKey: Self.awayOffStepsKey) as? [String: Int] ?? [:]
+        keptOnAtShutdown = Set(UserDefaults.standard.stringArray(forKey: Self.keptOnAtShutdownKey) ?? [])
         for (id, link) in links { link.setAutoOff(step: autoOffStep(for: id)) }
         awayRestore = UserDefaults.standard.dictionary(forKey: Self.awayRestoreKey) as? [String: [String: Int]] ?? [:]
         presence.onChange = { [weak self] away in self?.presenceChanged(away) }
@@ -338,10 +345,38 @@ final class HeaterStore: ObservableObject {
     /// An auto-off timer is not sent with "on": the heater drops it while
     /// switching on. It follows the "on" report instead (see `apply`), as when
     /// the heater is switched on at its button or in Air+.
-    func setPower(_ isOn: Bool, for id: String, reason: String = "you") {
+    func setPower(_ isOn: Bool, for id: String, reason: String = "you", completion: ((Bool) -> Void)? = nil) {
         // Switched in the middle of a re-arm: its "on" must not undo this.
         rearming[id] = nil
-        send(["D03102": isOn ? 1 : 0], to: id, reason: reason, isOn: isOn)
+        send(["D03102": isOn ? 1 : 0], to: id, reason: reason, isOn: isOn, completion: completion)
+    }
+
+    func switchesOffAtShutdown(_ id: String) -> Bool { !keptOnAtShutdown.contains(id) }
+
+    func setSwitchesOffAtShutdown(_ isOff: Bool, for id: String) {
+        if isOff { keptOnAtShutdown.remove(id) } else { keptOnAtShutdown.insert(id) }
+        UserDefaults.standard.set(keptOnAtShutdown.sorted(), forKey: Self.keptOnAtShutdownKey)
+    }
+
+    /// Switches off the heaters that are on (unless kept on), then calls
+    /// `done` once each has answered, or after 4 seconds: macOS waits for the
+    /// app while it quits, but not for long. An unreachable heater is skipped.
+    func switchOffForShutdown(reason: String, done: @escaping () -> Void) {
+        var waiting = Set(heaters.filter { $0.isOn == true && !$0.isStale && switchesOffAtShutdown($0.id) }.map(\.id))
+        var isDone = false
+        let finish = {
+            guard !isDone else { return }
+            isDone = true
+            done()
+        }
+        guard !waiting.isEmpty else { return finish() }
+        for id in waiting {
+            setPower(false, for: id, reason: reason) { _ in
+                waiting.remove(id)
+                if waiting.isEmpty { finish() }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { finish() }
     }
 
     func adjustTarget(by step: Int, for id: String) {
@@ -482,22 +517,53 @@ final class HeaterStore: ObservableObject {
                 send(values, to: heater.id, reason: "eco: you left the Mac", target: values["D0310E"] as? Int)
             }
         } else {
-            for (id, restore) in awayRestore {
-                guard let heater = heaters.first(where: { $0.id == id }) else { continue }
-                var values: [String: Any] = [:]
-                if restore["power"] == 1 || restore["timer"] == 1, heater.isOn == false { values["D03102"] = 1 }
-                if let target = restore["target"], heater.target == restore["setback"] { values["D0310E"] = target }
-                if restore["timer"] == 1, heater.isOn == true, (heater.timerMinutesLeft ?? 0) > 0 {
-                    values["D03110"] = 0
-                    if let index = heaters.firstIndex(where: { $0.id == id }) { heaters[index].timerMinutesLeft = 0 }
-                }
-                guard !values.isEmpty else { continue }
-                send(values, to: id, reason: "eco: you are back",
-                     isOn: values["D03102"] == nil ? nil : true, target: values["D0310E"] as? Int)
-            }
-            awayRestore = [:]
+            restoreAttempts = [:]
+            for id in awayRestore.keys { restoreFromEco(id) }
         }
         UserDefaults.standard.set(awayRestore, forKey: Self.awayRestoreKey)
+    }
+
+    /// Puts back what Eco changed. A "you are back" command can get no reply,
+    /// typically just after the Mac wakes or while the heater is off Wi-Fi:
+    /// on 2026-11-10 the target then stayed lowered to 18° for a day. So the
+    /// heater stays in Eco and it is tried again 30 seconds on, or once the
+    /// heater is reachable again, up to 5 times.
+    private func restoreFromEco(_ id: String) {
+        guard !isAway, let restore = awayRestore[id], !restoring.contains(id), links[id] != nil else { return }
+        guard let heater = heaters.first(where: { $0.id == id }) else {
+            awayRestore[id] = nil
+            return
+        }
+        var values: [String: Any] = [:]
+        if restore["power"] == 1 || restore["timer"] == 1, heater.isOn == false { values["D03102"] = 1 }
+        if let target = restore["target"], heater.target == restore["setback"] { values["D0310E"] = target }
+        if restore["timer"] == 1, heater.isOn == true, (heater.timerMinutesLeft ?? 0) > 0 { values["D03110"] = 0 }
+        guard !values.isEmpty else {
+            awayRestore[id] = nil
+            UserDefaults.standard.set(awayRestore, forKey: Self.awayRestoreKey)
+            return
+        }
+        if values["D03110"] != nil, let index = heaters.firstIndex(where: { $0.id == id }) {
+            heaters[index].timerMinutesLeft = 0
+        }
+        restoring.insert(id)
+        restoreAttempts[id, default: 0] += 1
+        send(values, to: id, reason: "eco: you are back",
+             isOn: values["D03102"] == nil ? nil : true, target: values["D0310E"] as? Int) { [weak self] ok in
+            guard let self else { return }
+            self.restoring.remove(id)
+            if ok || self.restoreAttempts[id, default: 0] >= 5 {
+                self.awayRestore[id] = nil
+                UserDefaults.standard.set(self.awayRestore, forKey: Self.awayRestoreKey)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+                    MainActor.assumeIsolated {
+                        guard self.heaters.first(where: { $0.id == id })?.problem != Self.unreachableProblem else { return }
+                        self.restoreFromEco(id)
+                    }
+                }
+            }
+        }
     }
 
     /// Air+ only switches the sweep on or off; 45° is what it uses for on.
@@ -667,6 +733,12 @@ final class HeaterStore: ObservableObject {
         guard let index = heaters.firstIndex(where: { $0.id == id }) else { return }
         let now = Date()
         if reachable {
+            // An Eco restore that got no reply, once the heater has reported.
+            if awayRestore[id] != nil, !isAway {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+                    MainActor.assumeIsolated { self.restoreFromEco(id) }
+                }
+            }
             if heaters[index].problem == Self.unreachableProblem {
                 // Back after being gone: shown as it last reported, as at
                 // launch, since a silent heater may not report for hours.

@@ -3,7 +3,57 @@ import SwiftUI
 
 @main
 struct HeaterBarApp: App {
-    @StateObject private var store = HeaterStore()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    var body: some Scene {
+        MenuBarExtra {
+            HeaterPanel(store: appDelegate.store)
+        } label: {
+            MenuBarIcon(store: appDelegate.store)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+/// Owns the store, so quitting can wait for it: when the Mac shuts down, the
+/// heaters that are on are switched off first (each heater's choice, in its
+/// leaf menu, on by default). A plain Quit, a restart or logging out leaves
+/// them as they are.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let store = HeaterStore()
+    private var isPoweringOff = false
+
+    override init() {
+        super.init()
+        // Posted on shutdown, restart and logout alike: only a fallback for a
+        // quit that does not say why (taken as a shutdown).
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.isPoweringOff = true }
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let reason = leavingReason() else { return .terminateNow }
+        store.switchOffForShutdown(reason: reason) { sender.reply(toApplicationShouldTerminate: true) }
+        return .terminateLater
+    }
+
+    /// "Mac shutting down" when that is why macOS asked the app to quit; nil
+    /// for a plain Quit, a restart or a logout.
+    private func leavingReason() -> String? {
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        switch event?.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))?.enumCodeValue {
+        case OSType(kAEShutDown): return "Mac shutting down"
+        case nil: return isPoweringOff ? "Mac shutting down" : nil
+        default: return nil
+        }
+    }
+}
+
+struct MenuBarIcon: View {
+    @ObservedObject var store: HeaterStore
 
     /// Menu bar symbols are drawn as monochrome templates; these keep their
     /// colour so heating (orange) and humid desk air (blue) show at a glance.
@@ -20,21 +70,16 @@ struct HeaterBarApp: App {
         return image
     }
 
-    var body: some Scene {
-        MenuBarExtra {
-            HeaterPanel(store: store)
-        } label: {
-            // Outlined when all are off, filled when one is on, orange when one
-            // heats, otherwise blue while the desk air is humid.
-            if store.heatersHeating > 0 {
-                Image(nsImage: Self.heatingIcon)
-            } else if store.isDeskHumid {
-                Image(nsImage: Self.humidIcons[store.heatersOn > 0 ? 1 : 0])
-            } else {
-                Image(systemName: store.heatersOn > 0 ? "heater.vertical.fill" : "heater.vertical")
-            }
+    // Outlined when all are off, filled when one is on, orange when one
+    // heats, otherwise blue while the desk air is humid.
+    var body: some View {
+        if store.heatersHeating > 0 {
+            Image(nsImage: Self.heatingIcon)
+        } else if store.isDeskHumid {
+            Image(nsImage: Self.humidIcons[store.heatersOn > 0 ? 1 : 0])
+        } else {
+            Image(systemName: store.heatersOn > 0 ? "heater.vertical.fill" : "heater.vertical")
         }
-        .menuBarExtraStyle(.window)
     }
 }
 
@@ -237,6 +282,8 @@ struct HeaterCard: View {
         let offStep = store.awayOffSteps[heater.id]
         let choices = HeaterStore.awayOffChoices(for: heater)
         let offLabel = choices.first { $0.step == offStep }?.label
+        let offAtShutdown = store.switchesOffAtShutdown(heater.id)
+        // The leaf stays about Eco and auto-off: the shutdown choice is on by default.
         let isEnabled = action != .none || offStep != nil
         return Menu {
             if followsPresence {
@@ -260,6 +307,13 @@ struct HeaterCard: View {
                             if choice.step == offStep { Label(choice.label, systemImage: "checkmark") } else { Text(choice.label) }
                         }
                     }
+                }
+            }
+            Section("On shutdown") {
+                Button {
+                    store.setSwitchesOffAtShutdown(!offAtShutdown, for: heater.id)
+                } label: {
+                    if offAtShutdown { Label("Switch off", systemImage: "checkmark") } else { Text("Switch off") }
                 }
             }
         } label: {
