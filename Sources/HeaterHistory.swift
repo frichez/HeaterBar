@@ -16,6 +16,12 @@ struct TemperatureSample: Codable, Identifiable {
     /// (absent in older files and elsewhere).
     var desk: Double?
     var deskHumidity: Double?
+    /// Whether the heater was switched on (absent in older files, and before
+    /// the heater has reported).
+    var isOn: Bool?
+    /// Whether someone was at the Mac at any point in the minute: not locked,
+    /// asleep or idle for 10 minutes (absent in older files).
+    var isPresent: Bool?
 
     var id: Date { time }
 }
@@ -45,7 +51,8 @@ struct HeaterHistory {
     /// Folds a reading into the current minute's sample. Returns true when it
     /// opened a new minute, which is when the history is worth saving.
     mutating func record(room: Double, target: Int?, isHeating: Bool, isEco: Bool, energyWh: Double,
-                         outdoor: Double?, desk: DeskReading? = nil, for id: String, at now: Date = Date()) -> Bool {
+                         outdoor: Double?, desk: DeskReading? = nil, isOn: Bool?, isPresent: Bool,
+                         for id: String, at now: Date = Date()) -> Bool {
         let minute = Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 60).rounded(.down) * 60)
         var list = samples[id] ?? []
         let opened: Bool
@@ -57,12 +64,15 @@ struct HeaterHistory {
                                                      outdoor: outdoor ?? last.outdoor,
                                                      isEco: last.isEco == true || isEco,
                                                      desk: desk?.temperature ?? last.desk,
-                                                     deskHumidity: desk?.humidity ?? last.deskHumidity)
+                                                     deskHumidity: desk?.humidity ?? last.deskHumidity,
+                                                     isOn: isOn ?? last.isOn,
+                                                     isPresent: last.isPresent == true || isPresent)
             opened = false
         } else {
             list.append(TemperatureSample(time: minute, room: room, target: target, isHeating: isHeating,
                                           energyWh: energyWh, outdoor: outdoor, isEco: isEco,
-                                          desk: desk?.temperature, deskHumidity: desk?.humidity))
+                                          desk: desk?.temperature, deskHumidity: desk?.humidity,
+                                          isOn: isOn, isPresent: isPresent))
             opened = true
         }
         list.removeAll { now.timeIntervalSince($0.time) > Self.retention }
@@ -106,7 +116,7 @@ struct HeaterHistory {
 /// little to learn from over a winter.
 enum MinuteArchive {
     static let columns = ["time", "heater", "room", "target", "heating", "eco", "energy_wh", "outdoor",
-                          "desk", "desk_humidity"]
+                          "desk", "desk_humidity", "on", "present"]
 
     private static let folder = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Projects/HeaterBar/logs/minutes")
@@ -149,18 +159,27 @@ enum MinuteArchive {
 
     private static func line(_ sample: TemperatureSample, heater: String) -> String {
         func number(_ value: Double?, _ format: String) -> String { value.map { String(format: format, $0) } ?? "" }
+        func flag(_ value: Bool?) -> String { value.map { $0 ? "1" : "0" } ?? "" }
         return [timeFormat.string(from: sample.time), heater.replacingOccurrences(of: ",", with: " "),
                 number(sample.room, "%.1f"), sample.target.map(String.init) ?? "", sample.isHeating ? "1" : "0",
                 sample.isEco == true ? "1" : "0", number(sample.energyWh, "%.1f"), number(sample.outdoor, "%.1f"),
-                number(sample.desk, "%.2f"), number(sample.deskHumidity, "%.1f")].joined(separator: ",")
+                number(sample.desk, "%.2f"), number(sample.deskHumidity, "%.1f"),
+                flag(sample.isOn), flag(sample.isPresent)].joined(separator: ",")
     }
 
     private static func write(_ lines: [String], day: Date) {
         let url = url(dayFormat.string(from: day))
         let manager = FileManager.default
+        let header = columns.joined(separator: ",")
         if !manager.fileExists(atPath: url.path) {
             try? manager.createDirectory(at: folder, withIntermediateDirectories: true)
-            try? (columns.joined(separator: ",") + "\n").write(to: url, atomically: true, encoding: .utf8)
+            try? (header + "\n").write(to: url, atomically: true, encoding: .utf8)
+        } else if let text = try? String(contentsOf: url, encoding: .utf8),
+                  let firstLine = text.split(separator: "\n", maxSplits: 1).first, firstLine != header {
+            // A day begun before new columns were added: name them in the
+            // header, the earlier lines just leave them empty.
+            let rest = text.dropFirst(firstLine.count)
+            try? (header + rest).write(to: url, atomically: true, encoding: .utf8)
         }
         guard let handle = try? FileHandle(forWritingTo: url) else { return }
         _ = try? handle.seekToEnd()

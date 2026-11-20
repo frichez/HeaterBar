@@ -7,6 +7,9 @@ It talks to them directly on the local network, no Philips account or cloud.
 ./build.sh --run
 ```
 
+The first run adds HeaterBar to the login items, so it opens when you log in
+(remove it in System Settings > General > Login Items). Rebuilding keeps it there.
+
 - Heaters are found automatically on the Mac's local network and remembered.
 - Local protocol: CoAP on UDP 5683, encrypted as in the open-source `aioairctrl`.
   Status keys: `D03102` power, `D0310E` target °C, `D03224` room °C × 10.
@@ -26,9 +29,11 @@ in git: it is personal data).
 
 `logs/minutes/YYYY-MM-DD.csv`, kept for good: one line per heater per minute
 (time, heater, room, target, heating, eco, energy_wh, outdoor, desk,
-desk_humidity), the data for learning how the room behaves over a winter.
+desk_humidity, on, present), the data for learning how the room behaves over a winter.
 It is written as each minute ends, and at launch any day it lacks is filled
-in from the week-long `history.json`.
+in from the week-long `history.json`. `on` is whether the heater was switched
+on; `present` whether someone was at the Mac at any point in the minute (not
+locked or idle for 10 minutes). No line at all means the Mac was asleep or off.
 
 | Column | Code | Values |
 |---|---|---|
@@ -51,7 +56,7 @@ in from the week-long `history.json`.
 ## Eco when away
 
 The leaf button on the Office card (the room this Mac is in) chooses what that heater does while nobody is at the
-Mac: nothing, lower the target by 2° or 4°, or switch off. Away means the screen
+Mac: nothing, lower the target by 1° or 2°, or switch off. Away means the screen
 locked, or no keyboard or mouse input, for 10 minutes, or the Mac going to sleep
 (acted on at once). Back means unlocked and used again: the target is restored,
 or the heater switched back on, unless it was changed meanwhile. If the

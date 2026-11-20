@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 
 @main
@@ -31,6 +32,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification,
                                                           object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.isPoweringOff = true }
+        }
+        openAtLoginOnce()
+    }
+
+    /// Adds HeaterBar to the login items the first time it runs. Only once, so
+    /// switching it off in System Settings > General > Login Items sticks.
+    private func openAtLoginOnce() {
+        let key = "addedToLoginItems"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        do {
+            try SMAppService.mainApp.register()
+            UserDefaults.standard.set(true, forKey: key)
+        } catch {
+            NSLog("HeaterBar: could not add to login items: \(error)")
         }
     }
 

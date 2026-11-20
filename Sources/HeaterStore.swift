@@ -81,21 +81,21 @@ enum HeaterMode: CaseIterable {
 
 /// What a heater does while nobody is at the Mac.
 enum AwayAction: String, CaseIterable {
-    case none, lower2, lower4, switchOff
+    case none, lower1, lower2, switchOff
 
     var label: String {
         switch self {
         case .none: return "Do nothing"
+        case .lower1: return "Lower the target by 1°"
         case .lower2: return "Lower the target by 2°"
-        case .lower4: return "Lower the target by 4°"
         case .switchOff: return "Switch off"
         }
     }
 
     var degrees: Int? {
         switch self {
+        case .lower1: return 1
         case .lower2: return 2
-        case .lower4: return 4
         case .none, .switchOff: return nil
         }
     }
@@ -872,7 +872,8 @@ final class HeaterStore: ObservableObject {
         if let room = heater.roomTemperature,
            history.record(room: room, target: heater.target, isHeating: heater.isOn == true && heater.isHeating,
                           isEco: awayRestore[id] != nil, energyWh: energyWh, outdoor: outdoor?.temperature,
-                          desk: desk(for: heater, now: now), for: id, at: now) {
+                          desk: desk(for: heater, now: now), isOn: heater.isOn, isPresent: !presence.isAway,
+                          for: id, at: now) {
             if let finished = history.lastFinished(for: id) { MinuteArchive.append(finished, heater: heater.name) }
             history.save()
             ledger.save()
