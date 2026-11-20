@@ -22,6 +22,11 @@ struct TemperatureSample: Codable, Identifiable {
     /// Whether someone was at the Mac at any point in the minute: not locked,
     /// asleep or idle for 10 minutes (absent in older files).
     var isPresent: Bool?
+    /// Whether the window vent was open, in the room this Mac is in (absent
+    /// elsewhere and in older files).
+    var isVentOpen: Bool?
+    /// Outdoor relative humidity (absent in older files).
+    var outdoorHumidity: Double?
 
     var id: Date { time }
 }
@@ -51,7 +56,7 @@ struct HeaterHistory {
     /// Folds a reading into the current minute's sample. Returns true when it
     /// opened a new minute, which is when the history is worth saving.
     mutating func record(room: Double, target: Int?, isHeating: Bool, isEco: Bool, energyWh: Double,
-                         outdoor: Double?, desk: DeskReading? = nil, isOn: Bool?, isPresent: Bool,
+                         outdoor: Double?, desk: DeskReading? = nil, isOn: Bool?, isPresent: Bool, isVentOpen: Bool? = nil, outdoorHumidity: Double? = nil,
                          for id: String, at now: Date = Date()) -> Bool {
         let minute = Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 60).rounded(.down) * 60)
         var list = samples[id] ?? []
@@ -66,13 +71,16 @@ struct HeaterHistory {
                                                      desk: desk?.temperature ?? last.desk,
                                                      deskHumidity: desk?.humidity ?? last.deskHumidity,
                                                      isOn: isOn ?? last.isOn,
-                                                     isPresent: last.isPresent == true || isPresent)
+                                                     isPresent: last.isPresent == true || isPresent,
+                                                     isVentOpen: isVentOpen ?? last.isVentOpen,
+                                                     outdoorHumidity: outdoorHumidity ?? last.outdoorHumidity)
             opened = false
         } else {
             list.append(TemperatureSample(time: minute, room: room, target: target, isHeating: isHeating,
                                           energyWh: energyWh, outdoor: outdoor, isEco: isEco,
                                           desk: desk?.temperature, deskHumidity: desk?.humidity,
-                                          isOn: isOn, isPresent: isPresent))
+                                          isOn: isOn, isPresent: isPresent, isVentOpen: isVentOpen,
+                                          outdoorHumidity: outdoorHumidity))
             opened = true
         }
         list.removeAll { now.timeIntervalSince($0.time) > Self.retention }
@@ -116,7 +124,7 @@ struct HeaterHistory {
 /// little to learn from over a winter.
 enum MinuteArchive {
     static let columns = ["time", "heater", "room", "target", "heating", "eco", "energy_wh", "outdoor",
-                          "desk", "desk_humidity", "on", "present"]
+                          "desk", "desk_humidity", "on", "present", "vent", "outdoor_humidity"]
 
     private static let folder = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Projects/HeaterBar/logs/minutes")
@@ -164,7 +172,8 @@ enum MinuteArchive {
                 number(sample.room, "%.1f"), sample.target.map(String.init) ?? "", sample.isHeating ? "1" : "0",
                 sample.isEco == true ? "1" : "0", number(sample.energyWh, "%.1f"), number(sample.outdoor, "%.1f"),
                 number(sample.desk, "%.2f"), number(sample.deskHumidity, "%.1f"),
-                flag(sample.isOn), flag(sample.isPresent)].joined(separator: ",")
+                flag(sample.isOn), flag(sample.isPresent), flag(sample.isVentOpen),
+                number(sample.outdoorHumidity, "%.0f")].joined(separator: ",")
     }
 
     private static func write(_ lines: [String], day: Date) {

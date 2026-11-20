@@ -107,10 +107,13 @@ struct HeaterPanel: View {
                 Text("Air+").font(.headline)
                 Spacer()
                 if let outdoor = store.outdoor {
-                    Label(String(format: "%.1f° outside", outdoor.temperature), systemImage: outdoor.symbol)
+                    Label(String(format: "%.1f°", outdoor.temperature)
+                          + (outdoor.humidity.map { String(format: " · %.0f %%", $0) } ?? "") + " outside",
+                          systemImage: outdoor.symbol)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .help("Outdoor temperature in \(OutdoorWeather.place), from Open-Meteo")
+                        .help("Outdoor temperature and humidity in \(OutdoorWeather.place), from Open-Meteo. "
+                              + "Cold air holds little water: warmed indoors, even 90 % outside becomes dry air.")
                 }
                 if store.isScanning {
                     ProgressView().controlSize(.small)
@@ -475,6 +478,7 @@ struct HeaterCard: View {
                 timerMenu
                     .opacity(isOn ? 1 : 0.6)
                 Spacer()
+                if store.followsPresence(heater) { ventButton }
                 // Right above the graph button.
                 ecoMenu
             }
@@ -624,6 +628,25 @@ struct HeaterCard: View {
     /// Always shown, in colour outside 35–60 %: air too humid in winter means
     /// condensation, and mould, on cold spots such as the window; too dry, eyes
     /// and throat suffer.
+    /// Records by hand whether the window vent is open, so the logs show what
+    /// it does to the humidity and the temperature.
+    private var ventButton: some View {
+        let since = store.ventOpenSince
+        let isOpen = since != nil
+        return Button { store.setVentOpen(!isOpen) } label: {
+            // Drawn like the leaf beside it.
+            Image(systemName: "wind")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(isOpen ? Color.teal : Color.secondary)
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(isOpen ? Color.teal.opacity(0.15) : Color.primary.opacity(0.08)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(since.map { "Window vent open since \($0.formatted(date: .omitted, time: .shortened)). Click when you close it." }
+              ?? "Window vent closed. Click when you open it, to log its effect on humidity and temperature.")
+    }
+
     private static func humidityHint(_ desk: DeskReading?) -> (text: String, color: Color, help: String)? {
         guard let desk, let humidity = desk.humidity else { return nil }
         let percent = Int(humidity.rounded())

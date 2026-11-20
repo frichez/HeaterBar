@@ -44,11 +44,11 @@ struct TemperatureChart: View {
     }
 
     private var humidityLegend: some View {
-        HStack(spacing: 12) {
-            legendItem("Desk humidity") {
+        HStack(spacing: 10) {
+            legendItem("Humidity", help: "Desk humidity") {
                 Capsule().fill(Color.teal).frame(width: 12, height: 2)
             }
-            legendItem("40–60 %", help: "Comfortable humidity") {
+            legendItem("40–60", help: "Comfortable humidity: 40–60 %") {
                 RoundedRectangle(cornerRadius: 2).fill(Color.primary.opacity(0.12)).frame(width: 10, height: 8)
             }
             legendItem("Heating") {
@@ -57,6 +57,11 @@ struct TemperatureChart: View {
             if !ecoSpans.isEmpty {
                 legendItem("Eco") {
                     RoundedRectangle(cornerRadius: 2).fill(Color.green.opacity(0.3)).frame(width: 10, height: 8)
+                }
+            }
+            if !ventSpans.isEmpty {
+                legendItem("Vent", help: durationHelp("Vent open", minutes: visible.filter { $0.isVentOpen == true }.count)) {
+                    Capsule().fill(Color.teal.opacity(0.6)).frame(width: 12, height: 4)
                 }
             }
         }
@@ -136,6 +141,15 @@ struct TemperatureChart: View {
     @ChartContentBuilder private var humidityMarks: some ChartContent {
         RectangleMark(yStart: .value("From", 40), yEnd: .value("To", 60))
             .foregroundStyle(Color.primary.opacity(0.06))
+        // The window vent open: a strip along the bottom, so it does not hide
+        // the heating and Eco shading.
+        let domain = humidityDomain
+        ForEach(ventSpans, id: \.lowerBound) { span in
+            RectangleMark(xStart: .value("From", span.lowerBound), xEnd: .value("To", span.upperBound),
+                          yStart: .value("Low", domain.lowerBound),
+                          yEnd: .value("High", domain.lowerBound + (domain.upperBound - domain.lowerBound) * 0.06))
+                .foregroundStyle(Color.teal.opacity(0.6))
+        }
         ForEach(visible.filter { $0.deskHumidity != nil }) { sample in
             LineMark(x: .value("Time", sample.time), y: .value("Humidity", sample.deskHumidity ?? 0))
                 .foregroundStyle(Color.teal)
@@ -225,6 +239,9 @@ struct TemperatureChart: View {
             if sample.isEco == true {
                 Text("Eco").font(.caption2).foregroundStyle(.secondary)
             }
+            if sample.isVentOpen == true {
+                Text("Vent open").font(.caption2).foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
@@ -240,6 +257,7 @@ struct TemperatureChart: View {
 
     private var heatingSpans: [ClosedRange<Date>] { spans { $0.isHeating } }
     private var ecoSpans: [ClosedRange<Date>] { spans { $0.isEco == true } }
+    private var ventSpans: [ClosedRange<Date>] { spans { $0.isVentOpen == true } }
 
     /// Runs of consecutive matching minutes, each covering its whole last minute.
     private func spans(where matches: (TemperatureSample) -> Bool) -> [ClosedRange<Date>] {

@@ -210,6 +210,10 @@ final class HeaterStore: ObservableObject {
     /// Heaters left on when the Mac shuts down; all others are switched off.
     @Published private(set) var keptOnAtShutdown: Set<String> = []
     private static let keptOnAtShutdownKey = "keptOnAtShutdown"
+    /// When the window vent of the room this Mac is in was opened (nil while
+    /// closed). Set by hand on the card, to measure what it does.
+    @Published private(set) var ventOpenSince: Date?
+    private static let ventOpenSinceKey = "ventOpenSince"
     private static let awayRestoreKey = "awayRestore"
 
     private var links: [String: HeaterLink] = [:]
@@ -276,6 +280,7 @@ final class HeaterStore: ObservableObject {
         awayActions = savedActions.compactMapValues(AwayAction.init)
         awayOffSteps = UserDefaults.standard.dictionary(forKey: Self.awayOffStepsKey) as? [String: Int] ?? [:]
         keptOnAtShutdown = Set(UserDefaults.standard.stringArray(forKey: Self.keptOnAtShutdownKey) ?? [])
+        ventOpenSince = UserDefaults.standard.object(forKey: Self.ventOpenSinceKey) as? Date
         for (id, link) in links { link.setAutoOff(step: autoOffStep(for: id)) }
         awayRestore = UserDefaults.standard.dictionary(forKey: Self.awayRestoreKey) as? [String: [String: Int]] ?? [:]
         presence.onChange = { [weak self] away in self?.presenceChanged(away) }
@@ -356,6 +361,15 @@ final class HeaterStore: ObservableObject {
     func setSwitchesOffAtShutdown(_ isOff: Bool, for id: String) {
         if isOff { keptOnAtShutdown.remove(id) } else { keptOnAtShutdown.insert(id) }
         UserDefaults.standard.set(keptOnAtShutdown.sorted(), forKey: Self.keptOnAtShutdownKey)
+    }
+
+    func setVentOpen(_ isOpen: Bool, now: Date = Date()) {
+        guard isOpen != (ventOpenSince != nil) else { return }
+        ventOpenSince = isOpen ? now : nil
+        UserDefaults.standard.set(ventOpenSince, forKey: Self.ventOpenSinceKey)
+        for heater in heaters where followsPresence(heater) {
+            statusLog.recordEvent(isOpen ? "vent opened" : "vent closed", heater: heater.name, at: now)
+        }
     }
 
     /// Switches off the heaters that are on (unless kept on), then calls
@@ -873,6 +887,8 @@ final class HeaterStore: ObservableObject {
            history.record(room: room, target: heater.target, isHeating: heater.isOn == true && heater.isHeating,
                           isEco: awayRestore[id] != nil, energyWh: energyWh, outdoor: outdoor?.temperature,
                           desk: desk(for: heater, now: now), isOn: heater.isOn, isPresent: !presence.isAway,
+                          isVentOpen: followsPresence(heater) ? ventOpenSince != nil : nil,
+                          outdoorHumidity: outdoor?.humidity,
                           for: id, at: now) {
             if let finished = history.lastFinished(for: id) { MinuteArchive.append(finished, heater: heater.name) }
             history.save()

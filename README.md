@@ -29,11 +29,14 @@ in git: it is personal data).
 
 `logs/minutes/YYYY-MM-DD.csv`, kept for good: one line per heater per minute
 (time, heater, room, target, heating, eco, energy_wh, outdoor, desk,
-desk_humidity, on, present), the data for learning how the room behaves over a winter.
+desk_humidity, on, present, vent, outdoor_humidity), the data for learning how the room behaves over a winter.
 It is written as each minute ends, and at launch any day it lacks is filled
 in from the week-long `history.json`. `on` is whether the heater was switched
 on; `present` whether someone was at the Mac at any point in the minute (not
 locked or idle for 10 minutes). No line at all means the Mac was asleep or off.
+`vent` is the window vent of the room this Mac is in, as set by hand with the
+wind button left of the leaf on its card (teal when open; also logged as an event in the daily CSV), to
+measure what it does to the humidity and the temperature.
 
 | Column | Code | Values |
 |---|---|---|
